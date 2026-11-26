@@ -32,8 +32,7 @@ class Typer:
         n = len(texts)
         if n == 0:
             return [], np.zeros(0), np.zeros(0)
-        n_chars = np.array([len(strip_marks(t).strip()) for t in texts], np.float32)
-        geom = torch.from_numpy(geometry(np.asarray(boxes, np.float32), n_chars, page_w, page_h))
+        geom = torch.from_numpy(geometry(np.asarray(boxes, np.float32), texts, page_w, page_h))
         text = torch.from_numpy(np.stack([text_ids(t, self.vocab) for t in texts])).long()
         roles, starts, conf = [], [], []
         for a in range(0, n, MAXL):  # a page with more lines than the model ever saw at once is read in pieces

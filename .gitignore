@@ -4,3 +4,5 @@ out/
 data/
 *.pt
 docs/real_*
+*.pdf
+*:Zone.Identifier

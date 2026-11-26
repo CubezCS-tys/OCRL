@@ -57,8 +57,7 @@ vocab = {c: i + 2 for i, (c, n) in enumerate(chars.most_common()) if n >= 40}
 G, T, R, S, offsets, meta = [], [], [], [], [0], []
 for stem, page, run, (pw, ph), ls in pages:
     boxes = np.array([l[:4] for l in ls], np.float32)
-    n_chars = np.array([len(strip_marks(l[6]).strip()) for l in ls], np.float32)
-    G.append(geometry(boxes, n_chars, pw, ph))
+    G.append(geometry(boxes, [l[6] for l in ls], pw, ph))
     T.append(np.stack([text_ids(l[6], vocab) for l in ls]))
     R.append(np.array([l[4] for l in ls], np.int16)); S.append(np.array([l[5] for l in ls], np.int8))
     offsets.append(offsets[-1] + len(ls)); meta.append((stem, page, run))

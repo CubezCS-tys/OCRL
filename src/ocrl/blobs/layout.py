@@ -45,7 +45,10 @@ def binarize(gray: np.ndarray) -> np.ndarray:
     return ink
 
 
-def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5) -> Layout:
+def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.ndarray | None = None) -> Layout:
+    """`hints`: line boxes [n, 4] (x0, y0, x1, y1, this image's pixels) from the trained line finder.
+    With them, which line a letter belongs to is taken from the hint it sits in; without them, lines
+    are chained from the letters' vertical overlap."""
     ink = binarize(gray)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
     boxes = np.stack(
@@ -68,8 +71,30 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5) -> Layout:
 
     # 1. Seeds: blobs tall enough to be letters for certain. Chain them into lines
     #    by vertical overlap.
-    seeds = np.flatnonzero(live & (h >= 0.45 * tall))
-    seed_line = _chain(boxes[seeds], tall)
+    if hints is not None and len(hints):
+        # A blob is a letter of a hinted line if its centre is inside the hint and it is a fair share of the
+        # line's height. The hint decides the line; overlap chaining only handles what no hint covers.
+        cx, cy = (boxes[:, 0] + boxes[:, 2]) / 2, (boxes[:, 1] + boxes[:, 3]) / 2
+        inside = (cx[:, None] >= hints[None, :, 0] - 2) & (cx[:, None] <= hints[None, :, 2] + 2) & (cy[:, None] >= hints[None, :, 1]) & (cy[:, None] <= hints[None, :, 3])
+        mid = (hints[:, 1] + hints[:, 3]) / 2
+        off = np.where(inside, np.abs(cy[:, None] - mid[None, :]), np.inf)
+        which = np.where(np.isfinite(off.min(axis=1)), off.argmin(axis=1), -1)
+        hh = np.where(which >= 0, (hints[:, 3] - hints[:, 1])[np.maximum(which, 0)], np.inf)
+        hinted = live & (which >= 0) & (h >= 0.3 * hh)
+        loose = live & ~hinted & (which < 0) & (h >= 0.45 * tall)
+        seeds = np.flatnonzero(hinted | loose)
+        _, seed_line = np.unique(which[seeds], return_inverse=True)  # hinted seeds: one line per hint in use
+        seed_line = seed_line.astype(np.int32)
+        if loose.any():
+            is_loose = loose[seeds]
+            extra = _chain(boxes[seeds[is_loose]], tall)
+            first = int(seed_line[~is_loose].max()) + 1 if (~is_loose).any() else 0
+            seed_line[is_loose] = first + extra
+            _, seed_line = np.unique(seed_line, return_inverse=True)
+            seed_line = seed_line.astype(np.int32)
+    else:
+        seeds = np.flatnonzero(live & (h >= 0.45 * tall))
+        seed_line = _chain(boxes[seeds], tall)
     n_lines = int(seed_line.max()) + 1 if len(seeds) else 0
     line[seeds] = seed_line
     role[seeds] = BODY

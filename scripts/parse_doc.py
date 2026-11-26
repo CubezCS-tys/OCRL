@@ -18,6 +18,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--ckpt", default="out/recognizer_v3.pt")
 ap.add_argument("--pages", default="", help="first-last, e.g. 1-3")
 ap.add_argument("--dpi", type=int, default=300)
+ap.add_argument("--lines", default="", help="a line-finder checkpoint; without it lines are chained by rule")
 ap.add_argument("--typer", default="", help="a structure model checkpoint; without it the hand-written rules type the blocks")
 args = ap.parse_args()
 torch.set_num_threads(12)
@@ -32,7 +33,7 @@ typer = None
 if args.typer:
     from ocrl.structure.tag import Typer
     typer = Typer(args.typer)
-infos, blocks = parse(OCR(args.ckpt), images, int(args.pages.split("-")[0]) if args.pages else 1, typer)
+infos, blocks = parse(OCR(args.ckpt, linefinder=args.lines or None), images, int(args.pages.split("-")[0]) if args.pages else 1, typer)
 how = f"OCRL structure model ({Path(args.typer).stem}), trained on the Desk database, local. Not checked by a person." if typer else ""
 master = to_master(doc_id, infos, blocks, args.dpi, Path(args.ckpt).stem, how)
 secs = time.time() - t

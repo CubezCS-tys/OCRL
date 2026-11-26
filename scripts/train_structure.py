@@ -18,6 +18,7 @@ ap.add_argument("--d", type=int, default=192)
 ap.add_argument("--layers", type=int, default=4)
 args = ap.parse_args()
 torch.manual_seed(0); rng = np.random.default_rng(0)
+torch.set_num_threads(4)  # a machine reporting hundreds of threads makes small tensor operations crawl
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 D = torch.load("data/structure/desk_lines.pt")
 off, meta, vocab = D["offsets"].tolist(), D["meta"], D["vocab"]

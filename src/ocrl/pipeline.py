@@ -88,16 +88,20 @@ def check(text: str, n_satellites: int) -> list[str]:
 
 class OCR:
     def __init__(self, checkpoint: str, repair: bool = False, margin: float = 3.0, space_ratio: float = 0.5,
-                 fusing_rate: float = 0.02):
+                 fusing_rate: float = 0.02, linefinder: str | None = None):
         # `repair` lets the rules swap in a next-best reading when the ink disagrees with the first.
         # It helps a little on clean rendered pages and hurts on the one real scan tested so far
         # (4.9% vs 4.6% character error), so it is off unless asked for. Doubts are flagged either way.
         self.model, self.vocab, _ = load(checkpoint)
         self.model.eval()
+        self.finder = None
+        if linefinder:
+            from .blobs.linefinder import LineFinder
+            self.finder = LineFinder(linefinder)
         self.repair, self.margin, self.space_ratio, self.fusing_rate = repair, margin, space_ratio, fusing_rate
 
-    def read(self, gray: np.ndarray, lay: Layout | None = None) -> PageResult:
-        lay = lay or analyze(gray)
+    def read(self, gray: np.ndarray, lay: Layout | None = None, hints: np.ndarray | None = None) -> PageResult:
+        lay = lay or analyze(gray, hints=hints)
         ids = cluster_ids(lay)
         items = [(li, b) for li, ln in enumerate(lay.lines) for b in ln.bodies]
         crops = [crop(gray, lay, ids[b], lay.lines[li].baseline, lay.lines[li].scale) for li, b in items]
@@ -143,14 +147,24 @@ class OCR:
         return PageResult([LineResult(_line_text(cl), cl) for cl in lines], lay, notes)
 
     def read_page(self, gray: np.ndarray) -> DocumentPage:
-        """Find the page's columns and blocks by whitespace, then read each in reading order.
+        """Clean the page, find its columns by whitespace and its lines with the trained line finder
+        (if one was given), then read each column in reading order.
 
         Blob ids in each result are local to its region; add the region's corner to place them on the page.
         """
+        from .blobs.clean import clean_page
+
+        gray = clean_page(gray).gray
+        lines = self.finder.lines(gray) if self.finder is not None else None
         out = []
         for r in find_regions(gray):
             crop = np.pad(gray[r.y0 : r.y1, r.x0 : r.x1], 16, constant_values=255)
-            out.append((r, self.read(crop)))
+            hints = None
+            if lines is not None and len(lines):
+                cx, cy = (lines[:, 0] + lines[:, 2]) / 2, (lines[:, 1] + lines[:, 3]) / 2
+                mine = lines[(cx >= r.x0) & (cx <= r.x1) & (cy >= r.y0) & (cy <= r.y1)]
+                hints = mine - np.array([r.x0 - 16, r.y0 - 16, r.x0 - 16, r.y0 - 16], np.float32)
+            out.append((r, self.read(crop, hints=hints)))
         return DocumentPage(out)
 
     def _run(self, crops: list[np.ndarray]) -> list[np.ndarray]:
