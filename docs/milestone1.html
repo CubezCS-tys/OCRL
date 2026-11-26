@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCRL Milestone 1</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=Noto+Naskh+Arabic:wght@500&family=JetBrains+Mono&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="milestone1.css">
+</head>
+<body>
+<main>
+
+<header>
+  <h1>Milestone 1: a neural network that reads one cluster of ink</h1>
+  <p class="lede">Yes, this is a neural network, and it is the only trained part of the system. It is given a small picture of one cluster of ink and returns letters. Finding the clusters before it, and checking its answers after it, is done by rules.</p>
+  <div class="facts" id="facts"></div>
+</header>
+
+<section>
+  <h2>Where the network sits</h2>
+  <figure>
+    <div class="strip">
+      <img id="strip-page" alt="Three lines of a rendered, degraded Arabic page in a font the network never trained on">
+      <div class="step"><b class="rules">rules</b><span id="strip-blobs"></span></div>
+      <img id="strip-overlay" alt="The same lines with each cluster of ink in its own colour; dots share the colour of the body they belong to">
+      <div class="step"><b class="net">network</b><span>reads each cluster separately, right to left</span></div>
+      <div class="step"><b class="rules">rules</b><span>check each reading against its ink, decide the word breaks, turn numbers around</span></div>
+      <div class="readout" id="strip-read" lang="ar"></div>
+    </div>
+    <figcaption id="strip-cap"></figcaption>
+  </figure>
+</section>
+
+<nav class="picker" id="picker" aria-label="Choose a cluster"><span>Every picture below shows this cluster:</span></nav>
+
+<section>
+  <h2>1. What goes in: one cluster, cut out around its baseline</h2>
+  <figure>
+    <div class="scroll"><div class="crop" id="crop"><img id="crop-img" alt=""><div class="base"><span>baseline</span></div></div></div>
+    <div class="dims" id="crop-dims"></div>
+    <figcaption>Exactly what the network is given. The picture is always 48 pixels tall and as wide as the cluster needs. The cluster's own ink is one channel; ink from its neighbours is a second channel, so the network can see, for example, a neighbour's tail that has swallowed this cluster's dots.</figcaption>
+  </figure>
+  <div class="unit">
+    <div class="card">
+      <h3>Maths</h3>
+      <div class="math" id="m-input"></div>
+      <p>The line's baseline <i>b</i> and letter height <i>s</i> come from the rules stage, so every cluster arrives at the same size and height on the page whatever the font size was.</p>
+    </div>
+    <div class="card">
+      <h3>Code</h3>
+      <span class="file">src/ocrl/recog/crops.py</span>
+<pre>y0 = round(base - 1.5 * s)      # ABOVE
+y1 = round(base + 0.9 * s)      # BELOW
+mine  = np.isin(labels[y0:y1, x0:x1], ids)
+own   = ink * mine              # channel 0
+other = ink * (1 - mine)        # channel 1
+out = resize([own, other], height=48)
+return out[:, :, ::-1]          # flip left-right</pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>2. The network: shrink the height, keep the width, then read along it</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 960 330" style="width:100%;min-width:780px;height:auto" role="img" aria-label="Network architecture. A 2 by 48 by W input passes through five convolution blocks that reduce the height from 48 to 3 while the width is only halved. Each of the W over 2 columns becomes one frame of 576 numbers, reduced to 160, read in both directions by a two-layer GRU, and turned into a probability for each of the output symbols.">
+      <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.5" color="var(--muted)">
+        <line x1="62" y1="130" x2="92" y2="130" marker-end="url(#ah)"/>
+        <line x1="150" y1="130" x2="178" y2="130" marker-end="url(#ah)"/>
+        <line x1="248" y1="130" x2="276" y2="130" marker-end="url(#ah)"/>
+        <line x1="366" y1="130" x2="394" y2="130" marker-end="url(#ah)"/>
+        <line x1="494" y1="130" x2="522" y2="130" marker-end="url(#ah)"/>
+        <line x1="622" y1="130" x2="650" y2="130" marker-end="url(#ah)"/>
+        <line x1="716" y1="130" x2="744" y2="130" marker-end="url(#ah)"/>
+        <line x1="838" y1="130" x2="866" y2="130" marker-end="url(#ah)"/>
+      </g>
+      <!-- feature maps: drawn height = real height x 3, drawn width grows with channel count -->
+      <g stroke="var(--learn)" stroke-width="1.5" fill="var(--learn-tint)">
+        <rect x="40" y="58" width="20" height="144"/>
+        <rect x="96" y="94" width="52" height="72"/>
+        <rect x="182" y="112" width="64" height="36"/>
+        <rect x="280" y="112" width="84" height="36"/>
+        <rect x="398" y="121" width="94" height="18"/>
+        <rect x="526" y="125" width="94" height="9"/>
+      </g>
+      <!-- frames -->
+      <g stroke="var(--learn)" stroke-width="1.2" fill="var(--learn-tint)">
+        <rect x="654" y="100" width="8" height="60"/><rect x="666" y="100" width="8" height="60"/><rect x="678" y="100" width="8" height="60"/><rect x="690" y="100" width="8" height="60"/><rect x="702" y="100" width="8" height="60"/>
+      </g>
+      <!-- GRU -->
+      <rect x="748" y="92" width="88" height="76" rx="4" stroke="var(--learn)" stroke-width="1.5" fill="var(--learn-tint)"/>
+      <g fill="none" stroke="currentColor" stroke-width="1.4" color="var(--learn)">
+        <line x1="760" y1="118" x2="822" y2="118" marker-end="url(#ah)"/>
+        <line x1="824" y1="144" x2="762" y2="144" marker-end="url(#ah)"/>
+      </g>
+      <!-- output grid -->
+      <g stroke="var(--rule)" stroke-width="1.2" fill="var(--rule-tint)">
+        <rect x="870" y="76" width="60" height="108"/>
+      </g>
+      <g stroke="var(--rule)" stroke-width="0.8" opacity="0.6">
+        <line x1="882" y1="76" x2="882" y2="184"/><line x1="894" y1="76" x2="894" y2="184"/><line x1="906" y1="76" x2="906" y2="184"/><line x1="918" y1="76" x2="918" y2="184"/>
+      </g>
+      <g font-size="12" text-anchor="middle">
+        <text x="50" y="40" font-weight="600">Input</text>
+        <text x="122" y="40" font-weight="600">Conv 1</text>
+        <text x="214" y="40" font-weight="600">Conv 2</text>
+        <text x="322" y="40" font-weight="600">Conv 3, 4</text>
+        <text x="445" y="40" font-weight="600">Conv 5</text>
+        <text x="573" y="40" font-weight="600">Stack rows</text>
+        <text x="682" y="40" font-weight="600">Frames</text>
+        <text x="792" y="40" font-weight="600">GRU, 2 layers</text>
+        <text x="900" y="40" font-weight="600">Output</text>
+      </g>
+      <g font-size="11.5" text-anchor="middle" class="muted">
+        <text x="44" y="226">2 × 48 × W</text>
+        <text x="126" y="226">48 × 24 × W/2</text>
+        <text x="214" y="226">96 × 12 × W/2</text>
+        <text x="322" y="226">144 × 6 × W/2</text>
+        <text x="445" y="226">192 × 3 × W/2</text>
+        <text x="573" y="226">576 per column</text>
+        <text x="682" y="226">W/2 × 160</text>
+        <text x="792" y="226">W/2 × 320</text>
+        <text x="900" y="226" id="arch-out">W/2 × 66</text>
+      </g>
+      <g font-size="11" text-anchor="middle" class="muted">
+        <text x="44" y="244">2 channels</text>
+        <text x="124" y="244">÷2 both ways</text>
+        <text x="214" y="244">÷2 height</text>
+        <text x="322" y="244">÷2 height</text>
+        <text x="445" y="244">÷2 height</text>
+        <text x="573" y="244">height is gone</text>
+        <text x="682" y="244">one per 2 px</text>
+        <text x="792" y="244">uses context</text>
+        <text x="900" y="244">per symbol</text>
+      </g>
+      <g font-size="11.5" text-anchor="middle" font-weight="600">
+        <text x="270" y="290" id="arch-cnn"></text>
+        <text x="628" y="290" id="arch-proj"></text>
+        <text x="792" y="290" id="arch-rnn"></text>
+        <text x="900" y="290" id="arch-outp"></text>
+      </g>
+      <g stroke="var(--line)" stroke-width="1">
+        <line x1="96" y1="272" x2="492" y2="272"/><line x1="560" y1="272" x2="710" y2="272"/><line x1="748" y1="272" x2="836" y2="272"/><line x1="870" y1="272" x2="930" y2="272"/>
+      </g>
+      <text x="480" y="318" font-size="11.5" text-anchor="middle" class="muted">Boxes are drawn to scale in height: 48, 24, 12, 6, 3. Width on the page stays W/2 the whole way through.</text>
+    </svg>
+    </div>
+    <figcaption>The convolutions squeeze the picture vertically until each 2-pixel-wide column is described by one list of numbers. The GRU then walks along those columns in both directions, so the guess for one column can use what lies to its right and left. The width is halved only once because the narrowest Arabic letters are about 5 pixels wide here, and every letter needs at least one column of its own.</figcaption>
+  </figure>
+  <div class="unit">
+    <div class="card">
+      <h3>Maths</h3>
+      <div class="math" id="m-net"></div>
+      <p>Each row of <i>P</i> is one frame; its numbers are probabilities over the symbols plus a special "blank" and sum to 1.</p>
+    </div>
+    <div class="card">
+      <h3>Code</h3>
+      <span class="file">src/ocrl/recog/model.py</span>
+<pre>def forward(self, x):                 # [B, 2, 48, W]
+    f = self.cnn(x)                   # [B, 192, 3, W/2]
+    f = f.permute(3, 0, 1, 2).flatten(2)  # [W/2, B, 576]
+    f = torch.relu(self.proj(f))      # [W/2, B, 160]
+    f, _ = self.rnn(f)                # [W/2, B, 320]
+    return self.out(f).log_softmax(-1)</pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>3. What comes out: one guess for every 2 pixels of width</h2>
+  <figure>
+    <div class="scroll"><div class="reader" id="reader"></div></div>
+    <dl class="collapse" id="collapse"></dl>
+    <figcaption>Real output of the trained network for this cluster. Each column is one frame, lined up under the 2 pixels of the picture it describes; darker means more probable. The network reads from the right, so frame 1 is at the right edge. The network usually answers with one sharp spike per letter and blank everywhere else, and a spike need not sit exactly over its letter. Move the pointer over a column to see its numbers.</figcaption>
+  </figure>
+  <div class="unit">
+    <div class="card">
+      <h3>Maths</h3>
+      <div class="math" id="m-ctc"></div>
+      <p>This is CTC. A <i>path</i> is one symbol per frame. Many paths collapse to the same text, and the probability of the text is the sum over all of them. Training pushes that sum up for the correct text, without ever being told which frame belongs to which letter.</p>
+    </div>
+    <div class="card">
+      <h3>Code</h3>
+      <span class="file">src/ocrl/recog/decode.py, scripts/train.py</span>
+<pre>def greedy(logp):                     # logp: [T, symbols]
+    ids = logp.argmax(-1)             # best symbol per frame
+    keep = ids[np.insert(ids[1:] != ids[:-1], 0, True)]  # merge repeats
+    return "".join(VOCAB[i] for i in keep if i)          # drop blanks
+
+loss = F.ctc_loss(logp, targets, frames, target_lengths)</pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>4. How it learns: pages we render ourselves, so the answer is always known</h2>
+  <figure>
+    <div class="loop">
+      <div class="r"><b>Arabic text</b><span>corpus sentences, made-up letter strings, numbers</span></div>
+      <div class="r"><b>Shape and draw</b><span id="loop-fonts"></span></div>
+      <div class="r"><b>Degrade</b><span>blur, ink spread, noise, slight rotation, JPEG</span></div>
+      <div class="r"><b>Find clusters</b><span>the same rules stage used on real pages</span></div>
+      <div class="n"><b>Network reads</b><span>a batch of 256 clusters</span></div>
+      <div class="n"><b>Compare, adjust</b><span>CTC loss against the known letters, then a small change to every weight</span></div>
+    </div>
+    <p class="loop-note" id="loop-note"></p>
+    <div class="charts">
+      <div class="chart" id="chart-loss"></div>
+      <div class="chart" id="chart-acc"></div>
+    </div>
+    <details><summary>Show the accuracy numbers as a table</summary><div id="acc-table"></div></details>
+    <figcaption>Because we draw each page, we know which pixels every letter put down, so each cluster's label is exactly the text whose ink it contains. The two accuracy lines staying together is the important result: the network does as well on fonts it has never seen as on fonts it trained on.</figcaption>
+  </figure>
+  <div class="unit">
+    <div class="card">
+      <h3>Maths</h3>
+      <div class="math" id="m-train"></div>
+      <p>The optimiser is AdamW. The step size rises for the first 5% of training and then falls away smoothly, which is why the loss keeps improving right to the end.</p>
+    </div>
+    <div class="card">
+      <h3>Code</h3>
+      <span class="file">scripts/train.py</span>
+<pre>for x, widths, targets, lengths in loader:
+    logp = model(x.float() / 255)
+    loss = F.ctc_loss(logp, targets, widths // 2, lengths)
+    opt.zero_grad()
+    loss.backward()                  # how to change each weight
+    clip_grad_norm_(model.parameters(), 5.0)
+    opt.step(); sched.step()         # change them a little</pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>5. The rules check every reading against its ink</h2>
+  <figure>
+    <dl class="check" id="check"></dl>
+    <div class="scroll"><table class="alts" id="alts"></table></div>
+    <figcaption>The rules look at each reading in three ways. Does it leave satellite ink unexplained? Does it need more dots than the cluster has? Can its letters join into one body at all? The first two are doubts: the network's next-best readings are tried and the most likely one that fits the ink is taken. The third is not a doubt. It means two units have run together in one blob, and the reading has spelled both out. One caution is built in: when ink spreads, dots fuse into strokes all over a page, so if the too-few-dots check fires on more than 2% of a page it is switched off for that page.</figcaption>
+  </figure>
+  <div class="unit">
+    <div class="card">
+      <h3>Maths</h3>
+      <div class="math" id="m-rules"></div>
+      <p><i>joins</i> comes from Unicode's joining table. The dot count is a range because fonts may draw two dots as one bar.</p>
+    </div>
+    <div class="card">
+      <h3>Code</h3>
+      <span class="file">src/ocrl/pipeline.py</span>
+<pre>def check(text, n_satellites):
+    found = []
+    if first_violation(text) is not None:
+        found.append(TOUCHING)        # more than one unit here
+    lo, hi = satellite_range(text)
+    if n_satellites &lt; lo:   found.append(MISSING)
+    elif n_satellites &gt; hi: found.append(EXTRA)
+    return found
+
+# in OCR.read: is the page's ink keeping its dots apart?
+if missing_n &gt;= 3 and missing_n &gt;= 0.02 * read_n:
+    notes.append("dots-fusing"); doubts.discard(MISSING)</pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Results so far</h2>
+  <figure>
+    <div class="scroll"><table class="results" id="results"></table></div>
+    <figcaption id="results-cap"></figcaption>
+  </figure>
+  <h3>What this does not show yet</h3>
+  <ul class="caveats">
+    <li>Every page here was rendered by us and then degraded. No real scan has been tested.</li>
+    <li>On degraded pages the rule checks now catch a smaller share of misreads than on clean ones. Where ink has spread and dots have fused, the dot count cannot be used, and nothing replaces it yet.</li>
+    <li>When strokes thin and break, the broken pieces are still counted as dots, which causes some false flags.</li>
+    <li>Only three fonts are held out. That is enough to see the trend, not to trust the second decimal.</li>
+    <li>No vowel marks, no handwriting, single-column pages only.</li>
+  </ul>
+</section>
+
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="m1_data.js"></script>
+<script src="milestone1.js"></script>
+</body>
+</html>

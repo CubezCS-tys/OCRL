@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCRL Vision</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=Noto+Naskh+Arabic:wght@500&display=swap">
+<style>
+/* Layout: one column. The diagram is a stack read from the bottom up: the page
+   goes in at the bottom, text comes out at the top, and a rail down the side
+   carries the one promise every layer keeps. */
+:root {
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --fg: #151b23;
+  --muted: #586374;
+  --line: #d3d9e2;
+  --rule: #1b4f8f;        /* layers made of rules and geometry */
+  --rule-tint: #e6eef9;
+  --learn: #6a3da6;       /* layers that are trained */
+  --learn-tint: #efe8fa;
+  --done: #1c7448;
+  --font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-arabic: "Noto Naskh Arabic", "Amiri", "Traditional Arabic", serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1217;
+    --surface: #161b22;
+    --fg: #e5e9ef;
+    --muted: #98a3b3;
+    --line: #2a323e;
+    --rule: #86b6ee;
+    --rule-tint: #14263c;
+    --learn: #bfa2f2;
+    --learn-tint: #251b3b;
+    --done: #62cf9b;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.55 var(--font-body);
+}
+main {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 40px 20px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+}
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { font-size: 30px; line-height: 1.15; font-weight: 600; }
+h2 { font-size: 19px; font-weight: 600; }
+h3 { font-size: 16px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+header { display: flex; flex-direction: column; gap: 12px; }
+.lede { color: var(--muted); font-size: 16px; }
+
+/* Legend */
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.swatch { width: 14px; height: 14px; border-radius: 3px; border: 1.5px solid; }
+.swatch.rule { background: var(--rule-tint); border-color: var(--rule); }
+.swatch.learn { background: var(--learn-tint); border-color: var(--learn); }
+
+/* The stack */
+.diagram { display: grid; grid-template-columns: minmax(0, 1fr) 46px; gap: 14px; }
+.stack { display: flex; flex-direction: column-reverse; min-width: 0; }
+.layer {
+  background: var(--surface);
+  border: 1.5px solid var(--line);
+  border-radius: 5px;
+  padding: 16px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.layer.rule { background: var(--rule-tint); border-color: var(--rule); }
+.layer.learn { background: var(--learn-tint); border-color: var(--learn); }
+.layer.planned { border-style: dashed; }
+.layer-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.kind { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600; }
+.rule .kind { color: var(--rule); }
+.learn .kind { color: var(--learn); }
+.io .kind { color: var(--muted); }
+.layer-note { color: var(--muted); font-size: 13.5px; }
+.parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.part {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.part strong { font-weight: 600; font-size: 14px; }
+.part span { color: var(--muted); font-size: 13px; }
+
+/* Status */
+.status {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1.5px solid var(--muted);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.status.built { border-color: var(--done); color: var(--done); }
+.status.built::before { content: "\2713\00a0"; }
+.status.now { border-color: var(--fg); color: var(--fg); }
+.status.now::before { content: "\25cf\00a0"; }
+.status.later { border-style: dashed; }
+.part .status { margin-left: 0; align-self: flex-start; margin-top: 4px; }
+
+/* What passes from one layer to the next */
+.hand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.hand svg { flex: none; color: var(--fg); }
+
+/* The promise every layer keeps */
+.rail {
+  border: 1.5px solid var(--fg);
+  border-radius: 5px;
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 0;
+}
+.rail span {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13.5px;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+/* Ink example */
+.ink { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; font-size: 13.5px; color: var(--muted); }
+.ink .word { font: 500 34px/1.5 var(--font-arabic); color: var(--fg); direction: rtl; white-space: nowrap; }
+.ink .a { color: var(--rule); }
+.ink .b { color: var(--learn); }
+.ink ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+
+/* Lower sections */
+section { display: flex; flex-direction: column; gap: 14px; }
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 28px; }
+ol, .plain { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; max-width: 62ch; }
+li::marker { color: var(--muted); font-variant-numeric: tabular-nums; }
+.evidence { font-variant-numeric: tabular-nums; }
+a { color: var(--rule); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--rule); outline-offset: 2px; }
+
+@media (max-width: 620px) {
+  .diagram { grid-template-columns: minmax(0, 1fr); }
+  .rail { padding: 10px 14px; }
+  .rail span { writing-mode: horizontal-tb; transform: none; }
+  h1 { font-size: 25px; }
+}
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>OCRL: rules and ink at the bottom, learned readers on top</h1>
+  <p class="lede">The foundation uses no learning. It turns a page into numbered blobs of ink and applies the rules of Arabic script to them. Everything smarter sits above it and has to answer to it.</p>
+  <div class="legend" aria-label="Legend">
+    <span><i class="swatch rule"></i>Rules and geometry: same input, same output, every time</span>
+    <span><i class="swatch learn"></i>Trained models: can be swapped or added</span>
+    <span>Dashed outline: not started</span>
+  </div>
+</header>
+
+<div class="diagram">
+  <div class="stack" role="img" aria-label="Seven layers, read from the bottom up. A page image enters the foundation, which numbers every blob of ink and groups it using script rules. A layout layer finds blocks, tables and forms. One of several trained readers turns each cluster into letters. Rule checks flag readings the ink does not support. Context models resolve the flags. The output is text in which every character points to its ink.">
+
+    <!-- DOM order is flow order; the stack is drawn bottom-up. -->
+    <div class="layer io">
+      <div class="layer-head">
+        <span class="kind">In</span>
+        <h3>Page image</h3>
+        <span class="layer-note">A scan, a phone photo, or a page rendered from a PDF.</span>
+      </div>
+    </div>
+
+    <div class="hand"><svg width="14" height="18" viewBox="0 0 14 18" aria-hidden="true"><path d="M7 17V3M2 8l5-6 5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>pixels</div>
+
+    <div class="layer rule">
+      <div class="layer-head">
+        <span class="kind">Rules and geometry</span>
+        <h3>Foundation</h3>
+        <span class="status built">Built, measured on rendered pages</span>
+      </div>
+      <div class="parts">
+        <div class="part"><strong>Ink map</strong><span>Every connected blob of ink gets an id. Each ink pixel belongs to exactly one blob.</span></div>
+        <div class="part"><strong>Structure</strong><span>Lines, baselines, bodies, and the dots and marks attached to each body, in reading order.</span></div>
+        <div class="part"><strong>Script rules</strong><span>Which letters join, where a body must end, how many dots a word must show, where a word break is forced.</span></div>
+      </div>
+      <div class="ink">
+        <span class="word" lang="ar"><span class="a">كتا</span><span class="b">ب</span></span>
+        <ul>
+          <li>Alef never joins leftward, so this word is two bodies.</li>
+          <li>The rules predict it: one body with one or two dot blobs, one body with one.</li>
+        </ul>
+      </div>
+      <p class="layer-note evidence">Measured: 99.18% of 77,145 text units across 25 print fonts came out as exactly one cluster, with no trained model involved.</p>
+    </div>
+
+    <div class="hand"><svg width="14" height="18" viewBox="0 0 14 18" aria-hidden="true"><path d="M7 17V3M2 8l5-6 5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>numbered blobs, grouped into lines and clusters</div>
+
+    <div class="layer rule planned">
+      <div class="layer-head">
+        <span class="kind">Mostly geometry</span>
+        <h3>Page layout</h3>
+        <span class="status now">Columns built; tables and forms not started</span>
+      </div>
+      <div class="parts">
+        <div class="part"><strong>Blocks and columns</strong><span>Found from whitespace alone. On the one real document tested, every block is placed and ordered correctly on 25 of 27 pages.</span><span class="status built">Built</span></div>
+        <div class="part"><strong>Tables</strong><span>Ruling lines are just very large blobs. Remove them from the text, keep them as the grid, and cells follow.</span></div>
+        <div class="part"><strong>Forms</strong><span>Boxes, labels and the ink written inside them: printed label, handwritten answer.</span></div>
+        <div class="part"><strong>Not text</strong><span>Stamps, signatures, figures. Marked and set aside, never read as letters.</span></div>
+      </div>
+      <p class="layer-note">This layer also decides which reader each region goes to.</p>
+    </div>
+
+    <div class="hand"><svg width="14" height="18" viewBox="0 0 14 18" aria-hidden="true"><path d="M7 17V3M2 8l5-6 5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>regions, each with its clusters and a kind of ink</div>
+
+    <div class="layer learn">
+      <div class="layer-head">
+        <span class="kind">Trained models</span>
+        <h3>Readers</h3>
+        <span class="layer-note">One per kind of ink. Same input, same output format, so they are interchangeable.</span>
+      </div>
+      <div class="parts">
+        <div class="part"><strong>Print</strong><span>Typeset Naskh and modern sans faces, with vowel marks and English words. 2.4 million parameters. 4.6% character error on a real 1992 scan.</span><span class="status now">Second version trained</span></div>
+        <div class="part"><strong>Handwriting</strong><span>Dots merge into strokes and letters touch, so blobs become soft guesses here.</span><span class="status later">Not started</span></div>
+        <div class="part"><strong>Other hands</strong><span>Ruq'ah, Nastaliq, Maghribi, early Kufic. Each breaks the print assumptions differently.</span><span class="status later">Not started</span></div>
+        <div class="part"><strong>Fully vowelled text</strong><span>The print reader handles light marking. Dense marking, as in Quranic or teaching texts, is untested.</span><span class="status later">Not started</span></div>
+      </div>
+    </div>
+
+    <div class="hand"><svg width="14" height="18" viewBox="0 0 14 18" aria-hidden="true"><path d="M7 17V3M2 8l5-6 5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>letters per cluster, with the runner-up readings</div>
+
+    <div class="layer rule">
+      <div class="layer-head">
+        <span class="kind">Rules</span>
+        <h3>Checks</h3>
+        <span class="status now">Built; flags only, repair off</span>
+      </div>
+      <div class="parts">
+        <div class="part"><strong>One body</strong><span>A reading with a non-joining letter in the middle cannot be one blob. Two units are touching, or it is a misread.</span></div>
+        <div class="part"><strong>Ink accounting</strong><span>The letters read must explain every dot in the cluster. Missing or leftover ink is flagged.</span></div>
+        <div class="part"><strong>Word breaks</strong><span>Two bodies whose facing letters would have joined must be different words. Those gaps calibrate the rest.</span></div>
+        <div class="part"><strong>Number direction</strong><span>Digit runs are turned left to right inside right-to-left text.</span></div>
+      </div>
+    </div>
+
+    <div class="hand"><svg width="14" height="18" viewBox="0 0 14 18" aria-hidden="true"><path d="M7 17V3M2 8l5-6 5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>text, plus a flag on every reading the ink does not fully support</div>
+
+    <div class="layer learn planned">
+      <div class="layer-head">
+        <span class="kind">Trained models</span>
+        <h3>Context</h3>
+        <span class="status later">Not started</span>
+      </div>
+      <div class="parts">
+        <div class="part"><strong>Language</strong><span>Vocabulary and morphology choose between the readings a flagged cluster allows.</span></div>
+        <div class="part"><strong>Understanding</strong><span>Names, dates, amounts; what a table column means; which form field holds what.</span></div>
+      </div>
+      <p class="layer-note">Proposed limit: this layer may choose among readings the ink supports. It may not write text that has no ink behind it.</p>
+    </div>
+
+    <div class="hand"><svg width="14" height="18" viewBox="0 0 14 18" aria-hidden="true"><path d="M7 17V3M2 8l5-6 5 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>resolved text and structure</div>
+
+    <div class="layer io">
+      <div class="layer-head">
+        <span class="kind">Out</span>
+        <h3>Text you can audit</h3>
+      </div>
+      <div class="parts">
+        <div class="part"><strong>Text</strong><span>Every character lists the blobs it was read from.</span></div>
+        <div class="part"><strong>Doubts</strong><span>Flagged readings, shown on the ink that caused them.</span></div>
+        <div class="part"><strong>Structure</strong><span>Tables as rows and cells, forms as fields and values.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="rail"><span>Every character keeps the ids of the blobs it came from, through every layer</span></div>
+</div>
+
+<div class="cols">
+  <section>
+    <h2>Order of work</h2>
+    <ol>
+      <li>Print reader on rendered pages. Done, twice.</li>
+      <li>Real scans. One document tested so far; more are needed, and none has been used for training.</li>
+      <li>Layout: columns are done; tables next, then forms.</li>
+      <li>A second reader, for handwriting. This is the test of whether readers really are interchangeable.</li>
+      <li>Context models, starting with the flagged readings only.</li>
+    </ol>
+  </section>
+  <section>
+    <h2>Still open</h2>
+    <ul class="plain">
+      <li>Which documents come first: books, newspapers, archives, forms?</li>
+      <li>How much of the blob map survives a real scan, where ink touches and breaks far more often.</li>
+      <li>Whether handwriting can use this foundation as it is, or needs its own softer version of it.</li>
+    </ul>
+  </section>
+</div>
+
+</main>
+</body>
+</html>

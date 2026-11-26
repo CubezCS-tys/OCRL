@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCRL Twelve-Hour Plan</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<link rel="stylesheet" href="milestone1.css">
+<style>
+  /* A twelve-column hour grid; each track is a row of bars placed on it. */
+  .grid { display: grid; grid-template-columns: 150px repeat(12, minmax(46px, 1fr)); gap: 6px 0; align-items: stretch; min-width: 860px; }
+  .hour { font-size: 11.5px; color: var(--muted); text-align: left; border-left: 1px solid var(--line); padding: 0 0 4px 4px; font-variant-numeric: tabular-nums; }
+  .track { font: 600 13.5px var(--font-body); padding: 8px 10px 8px 0; }
+  .track span { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+  .bar { border-radius: 4px; padding: 7px 7px; font-size: 12px; line-height: 1.35; border: 1.5px solid; margin: 2px 3px; min-width: 0; overflow-wrap: anywhere; }
+  .bar b { display: block; font-size: 12.5px; }
+  .bar.r { border-color: var(--rule); background: var(--rule-tint); }
+  .bar.n { border-color: var(--learn); background: var(--learn-tint); }
+  .bar.p { border-color: var(--fg); background: var(--surface); }
+  .bar.g { border-style: dashed; }
+  .lane { display: contents; }
+  .sep { grid-column: 1 / -1; border-top: 1px solid var(--line); margin: 2px 0; }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .ask { counter-reset: n; margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  .ask li { counter-increment: n; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; font-size: 14px; }
+  .ask li::before { content: counter(n); width: 24px; height: 24px; border-radius: 12px; background: var(--fg); color: var(--bg); font: 600 12.5px/24px var(--font-body); text-align: center; }
+  .ask b { font-weight: 600; }
+  table.t { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.t th, table.t td { text-align: left; padding: 7px 12px 7px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.t th { color: var(--muted); font-weight: 500; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>The next twelve hours</h1>
+  <p class="lede">One aim: a parser that runs on this laptop with no outside service, types blocks with a model trained on your own labelled pages, and is measured on documents it has not seen. Three tracks feed it, and the last three hours prove or disprove it.</p>
+  <div class="facts">
+    <div class="fact"><b>48%</b><span>where hand-written type rules land on unseen documents today</span></div>
+    <div class="fact"><b>1.39 M</b><span>labelled lines in your Desk database, from 2,573 articles</span></div>
+    <div class="fact"><b>4.0%</b><span>our reader against Azure on one document; your own line reader's log shows about 1%</span></div>
+    <div class="fact"><b>$0.58</b><span>GPU spent so far</span></div>
+  </div>
+</header>
+
+<section>
+  <h2>The timeline</h2>
+  <figure>
+    <div class="scroll">
+    <div class="grid" role="img" aria-label="Twelve-hour plan in four tracks. Foundation fixes in hours 0 to 3. Structure model in hours 0 to 7. Reader on real ink in hours 4 to 10, with a stop test at hour 9. Proof in hours 9 to 12: parse unseen documents, freeze, run the locked tests once, write up.">
+      <div></div>
+      <div class="hour">0</div><div class="hour">1</div><div class="hour">2</div><div class="hour">3</div><div class="hour">4</div><div class="hour">5</div><div class="hour">6</div><div class="hour">7</div><div class="hour">8</div><div class="hour">9</div><div class="hour">10</div><div class="hour">11</div>
+
+      <div class="track">Foundation<span>rules, no training</span></div>
+      <div class="bar r" style="grid-column: 2 / span 3"><b>Grey pages and scan borders</b>Thresholding that survives photos and tinted paper; ignore the scanner's black edge. Measure: share of Azure's lines we find on 200 unseen pages.</div>
+      <div style="grid-column: 5 / -1"></div>
+      <div class="sep"></div>
+
+      <div class="track">Structure model<span>the centrepiece</span></div>
+      <div class="bar n" style="grid-column: 2 / span 1"><b>Read the data</b>Desk tables, splits, what is locked.</div>
+      <div class="bar n" style="grid-column: 3 / span 2"><b>Build the table</b>Per line: place, size, indents, gaps, a few text cues. Label: its block type.</div>
+      <div class="bar n" style="grid-column: 5 / span 2"><b>Train and score</b>A small model over a page's lines. Held out by document.</div>
+      <div class="bar n" style="grid-column: 7 / span 2"><b>Plug in</b>Replaces my hand-written type rules. Rules stay for order and columns.</div>
+      <div style="grid-column: 9 / -1"></div>
+      <div class="sep"></div>
+
+      <div class="track">Reader on real ink<span>stretch, with a stop test</span></div>
+      <div style="grid-column: 2 / span 4"></div>
+      <div class="bar n g" style="grid-column: 6 / span 2"><b>Real-ink labels</b>Pull about 500 documents from S3. Match Azure's words to our blobs with the script rules.</div>
+      <div class="bar n g" style="grid-column: 8 / span 2"><b>Retrain on GPU</b>Rendered pages plus real ink.</div>
+      <div class="bar n g" style="grid-column: 10 / span 1"><b>Stop test</b>on 50 unseen.</div>
+      <div style="grid-column: 11 / -1"></div>
+      <div class="sep"></div>
+
+      <div class="track">Proof<span>no tuning after the freeze</span></div>
+      <div style="grid-column: 2 / span 9"></div>
+      <div class="bar p" style="grid-column: 11 / span 1"><b>Parse 100</b>unseen, end to end.</div>
+      <div class="bar p" style="grid-column: 12 / span 1"><b>Freeze, test once</b>your 12 pages.</div>
+      <div class="bar p" style="grid-column: 13 / span 1"><b>Write up</b>Results page.</div>
+    </div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--rule)"></i>Rules and geometry</span>
+      <span><i style="background:var(--learn)"></i>Trained</span>
+      <span>Dashed: only if the earlier steps are on time</span>
+    </div>
+    <figcaption>I am one session, so the laptop tracks run one after another; GPU jobs run in the background while I work on the next thing. Hours are estimates, and the order matters more than the clock.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>What each track is for</h2>
+  <div class="scroll"><table class="t">
+    <tr><th>Track</th><th>Why</th><th>How we will know</th><th>If it fails</th></tr>
+    <tr><td><b>Foundation</b></td><td>On the magazine page we found 40 of 111 lines. Nothing above the blob map can recover that.</td><td>Share of Azure's lines that land inside one of our lines, on 200 pages never looked at.</td><td>Use Azure's line boxes as the input to structure, and treat our own line finding as unfinished.</td></tr>
+    <tr><td><b>Structure model</b></td><td>Hand-written type rules do not transfer. You already paid Gemini to label 1.39 million lines; a small model can learn from them and run for free.</td><td>Line types and block cuts against held-out documents, then against the hand keys, then one run on the 12 test pages with your <code>compare()</code>.</td><td>Report which types it cannot learn from shape and a few words. That is the list for a language layer.</td></tr>
+    <tr><td><b>Reader on real ink</b></td><td>Our reader has never trained on a real page, and its main mistakes are about real ink.</td><td>Agreement with Azure on 50 unseen documents, and the blind-reader keys from experiment 103.</td><td>Stop at hour 9 and use your own line reader, whose log already shows about 1%.</td></tr>
+    <tr><td><b>Proof</b></td><td>Every number so far comes from one document.</td><td>100 unseen documents parsed end to end; locked tests run once after the freeze.</td><td>Not applicable: this track is the measurement.</td></tr>
+  </table></div>
+</section>
+
+<section>
+  <h2>What I need from you before I start</h2>
+  <div class="two">
+    <div class="card">
+      <ol class="ask">
+        <li><div><b>GPU spending for the night.</b> I suggest up to $10 in total, datacenter RTX 5090 only, each run logged and hard-stopped. The permission system asks for your yes on every rental, so if you will be away, tell me how you want that handled.</div></li>
+        <li><div><b>Private pages on a rented machine.</b> Training on real ink means uploading crops and labels cut from Mandumah pages to a datacenter GPU, deleted with the instance. Yes or no.</div></li>
+        <li><div><b>S3 download.</b> About 500 to 1,000 documents (PDF and Azure text), roughly 5 to 10 GB, read-only.</div></li>
+        <li><div><b>What is locked.</b> I will keep off inkscript_v2's 12 test pages and their documents, and the experiment 97 exam keys, until the freeze. Tell me if other sets are off limits.</div></li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>Needs nothing from you</h3>
+      <ul>
+        <li>The whole foundation track.</li>
+        <li>The structure model up to and including training, which can run on this laptop's CPU.</li>
+        <li>Parsing and scoring the documents already on this machine.</li>
+      </ul>
+      <h3>One optional thing</h3>
+      <p>The code for your own line reader (experiment 89). Its weights arrived but its code did not. With it I can compare the two readers on the same lines instead of comparing against a log.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>What you will have at the end</h2>
+  <div class="two">
+    <div class="card">
+      <h3>If it goes to plan</h3>
+      <ul>
+        <li>A parser that types blocks with a model you own, with its score on documents it has not seen and on your frozen test.</li>
+        <li>A foundation that reads grey and photographic pages, with a measured line-finding rate.</li>
+        <li>A verdict on our reader: close enough to keep, or replaced by yours.</li>
+        <li>The viewer output for 100 documents and one results page.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>What I am not promising</h3>
+      <ul>
+        <li>Gemini's score. It labelled 580 of 583 test lines as the key did. My guess for a first learned typer is 80 to 90%, and it is only a guess.</li>
+        <li>Tables, equations and pictures. They stay labelled, not parsed.</li>
+        <li>That the real-ink reader gets built. It is the first thing to drop if the centrepiece runs late.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</main>
+</body>
+</html>

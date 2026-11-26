@@ -1,0 +1,35 @@
+[project]
+name = "ocrl"
+version = "0.1.0"
+description = "Arabic-first OCR: connected ink blobs as the map, script rules as constraints"
+readme = "README.md"
+authors = [
+    { name = "CubezCS-tys", email = "yasuniversity2022@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "freetype-py>=2.5.1",
+    "numpy>=2.5.5",
+    "opencv-python-headless>=5.1.0.95",
+    "pillow>=13.0.0",
+    "rapidfuzz>=3.14.6",
+    "torch>=2.15.0",
+    "uharfbuzz>=0.57.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.8,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
