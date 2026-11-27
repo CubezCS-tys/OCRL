@@ -28,6 +28,9 @@ The defaults (Qwen's order, the paragraph-ends rule on top) are what measured be
 our own lines (scripts/e2e_judged.py, 2026-11-27): types 95.6%, blocks exact 87.1% (the small pair 95.4%, 84.5%);
 Qwen's answer as it is 95.5%, 85.0%; with the list rule too 95.5%, 87.2%. On the untouched check set, once:
 90.8% / 83.8% against the small pair's 86.2% / 75.0%.
+Those numbers are adapter run4_pass2 (trained on Azure's lines). The page now serves run5_ours (scripts/gpu/platform.sh
+QLORA; run4_pass2 stays selectable), also trained on our own lines: 70 pages 95.6% / 87.9%; check set, once,
+91.0% / 83.8%; on Azure's lines 96.2% / 84.9% (run4_pass2 96.1% / 85.4%).
 """
 
 from __future__ import annotations

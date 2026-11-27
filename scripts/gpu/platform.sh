@@ -38,8 +38,9 @@ MODELS=("$ROOT/out/recognizer_v3.pt:recognizer_v3.pt" "$ROOT/out/linefinder.pt:l
 SERVE_ARGS="--reader out/reader_v7.pt --lines out/linefinder.pt --typer out/structure_v2.pt+out/structure_v3.pt"
 # The vision-language structure step: Qwen3.5-9B with our LoRA adapter, served by vLLM on the same machine (no outside service).
 QWEN=${QWEN:-auto}; QMEM=${QMEM:-0.70}; QOPTS=${QOPTS:-}
-#   QLORA= which adapter (a folder under out/qwen_lora/): run4_pass2 trained on Azure's lines only
-QLORA=${QLORA:-run4_pass2}
+#   QLORA= which adapter (a folder under out/qwen_lora/): run5_ours (default; run4_pass2 continued on 2,650 pages,
+#     three quarters built from our own lines, scripts/qwen_ourlines.py) or run4_pass2 (Azure's lines only)
+QLORA=${QLORA:-run5_ours}
 QADAPTER=$ROOT/out/box/out/qwen_lora/$QLORA/adapter; QADAPTER_R=/work/out/qwen_lora/$QLORA/adapter
 QMODEL=Qwen/Qwen3.5-9B; QSNAP=/work/hf/hub/models--Qwen--Qwen3.5-9B/snapshots
 
