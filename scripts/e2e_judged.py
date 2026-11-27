@@ -54,7 +54,7 @@ import os
 for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
     os.environ.setdefault(_v, "4")
 
-import argparse, json, pickle, resource, subprocess, sys, time, hashlib
+import argparse, json, pickle, re, resource, subprocess, sys, time, hashlib
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -228,10 +228,41 @@ def norm(t: str) -> str:
     return _NORM(t)
 
 
+_TURNED = re.compile(r"turned upright \((\d+) degrees counter-clockwise\)")
+
+
+def page_turn(pg: dict) -> int:
+    """Quarter turns (np.rot90's k) the parser gave this page before reading it: the master's "turned", or, in
+    masters saved before that was written, the degrees in the page's warning. 0 for a page read as it lay."""
+    if "turned" in pg:
+        return int(pg["turned"]) % 4
+    for w in pg.get("warnings", []):
+        m = _TURNED.search(w)
+        if m:
+            return (int(m.group(1)) // 90) % 4
+    return 0
+
+
+def unturn(box, k: int, W: float, H: float):
+    """A box on the page turned by np.rot90(page, k) (W x H: the turned page's size) back on the page as it lay.
+    rot90 by 1 sends (x, y) of the page as it lay to (y, W0 - x); by 3 to (H0 - y, x); by 2 to (W0 - x, H0 - y)."""
+    x0, y0, x1, y1 = box
+    if k == 1:   # page as it lay is H wide, W high
+        return (H - y1, x0, H - y0, x1)
+    if k == 3:
+        return (y0, W - x1, y1, W - x0)
+    if k == 2:
+        return (W - x1, H - y1, W - x0, H - y0)
+    return tuple(box)
+
+
 def our_lines(master: dict, number: int) -> list[dict]:
-    """Our lines on this page in the order the owner reads them: blocks as listed, lines as listed in each."""
+    """Our lines on this page in the order the owner reads them: blocks as listed, lines as listed in each.
+    Boxes are in thousandths of the page AS IT LAY (Azure's frame): a page the parser turned upright has its
+    boxes turned back first."""
     pg = next(p for p in master["pages"] if p["number"] == number)
     W, H = pg["width"], pg["height"]
+    k = page_turn(pg)
     out = []
     for bi, b in enumerate(master["blocks"]):
         boxes = []  # (box, text) in the order the owner reads them
@@ -250,8 +281,15 @@ def our_lines(master: dict, number: int) -> list[dict]:
                                 seen.add(bx); ordered.append((bx, text_of[bx]))
             boxes = ordered + [(bx, t) for bx, t in boxes if bx not in seen]
         for bx, t in boxes:
-            out.append({"block": bi, "type": b["type"], "box": (bx[0] / W * 1000, bx[1] / H * 1000, bx[2] / W * 1000, bx[3] / H * 1000),
-                        "text": t, "pos": len(out)})
+            if k:
+                ux = unturn(bx, k, W, H)
+                W0, H0 = (H, W) if k % 2 else (W, H)
+                box = (ux[0] / W0 * 1000, ux[1] / H0 * 1000, ux[2] / W0 * 1000, ux[3] / H0 * 1000)
+            else:
+                box = (bx[0] / W * 1000, bx[1] / H * 1000, bx[2] / W * 1000, bx[3] / H * 1000)
+            out.append({"block": bi, "type": b["type"], "box": box, "text": t, "pos": len(out)})
+    if k % 2:
+        W, H = H, W
     return out, 1000 * SLACK / W, 1000 * SLACK / H
 
 

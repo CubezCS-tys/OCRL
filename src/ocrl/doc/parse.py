@@ -81,6 +81,9 @@ class Block:
     parent: "Block | None" = None  # the block this one carries on from, over a column or page break
     table: object = None  # for a table: its grid (ocrl.doc.tables.Table)
     caption: "Block | None" = None  # for a table: its caption block
+    # for a figure made from a picture the cleaner found: (page, box in pixels, "photograph" or "drawing"); its
+    # lines are the words printed inside the picture (a map's place names), and a masked photograph has none
+    picture: tuple | None = None
 
     @property
     def text(self) -> str:
@@ -88,10 +91,12 @@ class Block:
 
     @property
     def page(self) -> int:
-        return self.lines[0].page
+        return self.lines[0].page if self.lines else self.picture[0]
 
     def box(self, lines=None) -> tuple[int, int, int, int]:
         ls = lines or self.lines
+        if not ls and self.picture is not None:
+            return tuple(self.picture[1])
         return min(l.x0 for l in ls), min(l.y0 for l in ls), max(l.x1 for l in ls), max(l.y1 for l in ls)
 
 
@@ -113,6 +118,7 @@ class PageInfo:
     warnings: list[str] = field(default_factory=list)  # why the page may not have been read properly (pipeline._warn)
     pictures: list[tuple[int, int, int, int]] = field(default_factory=list)  # photographs and drawings the cleaner found (not read)
     turned: int = 0  # quarter turns (np.rot90's k) given to a page that lay on its side; width, height and boxes are of the turned page
+    drawings: list[tuple[int, int, int, int]] = field(default_factory=list)  # those of `pictures` that are line drawings (maps, charts)
 
 
 def _strokes(gray: np.ndarray) -> tuple[list, list, float]:
@@ -161,7 +167,8 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
     lh = float(np.median([l.y1 - l.y0 for l in lines])) if lines else 30.0
     return PageInfo(number, gray.shape[1], gray.shape[0], lines, cols, rules, frames, notes,
                     grid, cleaned.uprights, short_rules(gray, grid, cleaned.uprights, lh, [(l.x0, l.y0, l.x1, l.y1) for l in lines]),
-                    list(getattr(doc, "warnings", [])), list(getattr(cleaned, "pictures", [])), turned)
+                    list(getattr(doc, "warnings", [])), list(getattr(cleaned, "pictures", [])), turned,
+                    list(getattr(cleaned, "drawings", [])))
 
 
 FOOTNOTE_RULE = True  # running text under a short rule at a column's edge is footnotes (_footnotes_under_rule)
@@ -523,13 +530,37 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
         _heads_in_text(ls, kinds)
         starts = np.array(starts, np.float64)
         ls, kinds, starts, paired = _couplets(ls, kinds, starts)
+        # One block per picture: the words printed inside it are its labels, whatever they were called; they
+        # are kept out of the tables (a map's frame and graticule are not a table's rules).
+        pics, fig_of, before = _picture_members(p, ls, kinds) if FIGURES else ([], {}, {})
         # One block per table, put together from its cells (tables.py), standing where its first line is read.
-        found = find_tables(p, ls, kinds)
+        found = _tables_besides(p, ls, kinds, fig_of)
+        for _ in range(3):  # a map's ruled frame and graticule, its boxed legend: the map, not a table
+            if not pics:
+                break
+            n = len(pics)
+            pics[:] = _not_cell_strokes(pics, found)
+            if not _frames_of_drawings(pics, found, ls) and len(pics) == n:
+                break
+            pics, fig_of, before = _picture_members(p, ls, kinds, pics)
+            found = _tables_besides(p, ls, kinds, fig_of)
+        for i in fig_of:
+            kinds[i] = "figure"
         owner = {i: t for t in found for i in t.members}
         _not_tables(ls, kinds, starts, owner, found)
         placed: set[int] = set()
         cur: Block | None = None
         for i, (ln, kind, start) in enumerate(zip(ls, kinds, starts)):
+            for k in before.get(i, []):  # a photograph with no words in it, where its place on the page puts it
+                out.append(Block([], "figure", picture=pics[k]))
+                cur = None
+            if i in fig_of:
+                k = fig_of[i]
+                if ("pic", k) not in placed:
+                    placed.add(("pic", k))
+                    out.append(Block(_label_order([ls[j] for j, kk in fig_of.items() if kk == k], ls), "figure", picture=pics[k]))
+                cur = None
+                continue
             if i in owner:
                 t = owner[i]
                 if id(t) not in placed:
@@ -556,6 +587,8 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             out.append(cur)
             if kind not in ASIDE and kind not in ("table", "footnote", "figure"):
                 last_flow = cur
+        for k in before.get(len(ls), []):
+            out.append(Block([], "figure", picture=pics[k]))
     if FOOTNOTE_RULE:
         _footnotes_under_rule(infos, out)
     _references_go_on(infos, out)
@@ -577,6 +610,144 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             order += 1
             b.order = order
     return out
+
+
+FIGURES = True  # one figure block per picture the cleaner found, the words inside it its labels (_picture_members)
+_WORDY = re.compile(r"[^\W\d_]{3,}")  # a word of three letters or more, any script
+
+
+def _tables_besides(p: PageInfo, ls: list[TextLine], kinds: list[str], fig_of: dict[int, int]) -> list:
+    """tables.find_tables on the lines that are not a picture's labels; members index `ls` as usual."""
+    if not fig_of:
+        return find_tables(p, ls, kinds)
+    keep = [i for i in range(len(ls)) if i not in fig_of]
+    found = find_tables(p, [ls[i] for i in keep], [kinds[i] for i in keep])
+    for t in found:
+        t.members = [keep[i] for i in t.members]
+    return found
+
+
+def _not_cell_strokes(pics: list, found: list) -> list:
+    """Drawings inside a ruled table, small beside it (together under a third of it), are strokes of the table's
+    own (a header cell split by a diagonal into two labels): not pictures. The pictures without them."""
+    area = lambda b: max(b[2] - b[0], 0) * max(b[3] - b[1], 0)
+    drop = set()
+    for t in found:
+        if not t.ruled:
+            continue
+        held = [k for k, (_, b, kind) in enumerate(pics) if kind == "drawing" and b[0] >= t.box[0] and b[1] >= t.box[1]
+                and b[2] <= t.box[2] and b[3] <= t.box[3]]
+        if held and sum(area(pics[k][1]) for k in held) < 0.33 * area(t.box):  # more is maps in a frame (_frames_of_drawings)
+            drop |= set(held)
+    return [q for k, q in enumerate(pics) if k not in drop]
+
+
+def _frames_of_drawings(pics: list, found: list, ls: list[TextLine]) -> bool:
+    """A map is often printed in a ruled frame with its graticule (degrees along the edges) between frame and
+    map: the cleaner's drawing box holds the map alone, and the frame's rules made a ruled "table" of the
+    degrees round it. A ruled table whose box holds drawings taking up a third of it or more is that frame
+    (one frame may hold two maps): one drawing grows to the frame; several each grow over the table's lines
+    nearest to them (in place in `pics`). Says whether any grew."""
+    grew = False
+    lh = float(np.median([l.y1 - l.y0 for l in ls])) if ls else 0.0
+    area = lambda b: max(b[2] - b[0], 0) * max(b[3] - b[1], 0)
+    for t in found:
+        tx0, ty0, tx1, ty1 = t.box
+        held = [k for k, (_, b, kind) in enumerate(pics)
+                if kind == "drawing" and b[0] >= tx0 - lh and b[1] >= ty0 - lh and b[2] <= tx1 + lh and b[3] <= ty1 + lh]
+        if not t.ruled or not held or sum(area(pics[k][1]) for k in held) < 0.33 * area(t.box):
+            # or the other way round: a "table" mostly inside a drawing (its legend) is part of it, ruled or not
+            over = lambda b: area((max(b[0], tx0), max(b[1], ty0), min(b[2], tx1), min(b[3], ty1)))
+            held = [k for k, (_, b, kind) in enumerate(pics) if kind == "drawing" and over(b) >= 0.5 * area(t.box)][:1]
+            if not held:
+                continue
+            page, b, kind = pics[held[0]]
+            pics[held[0]] = (page, (min(b[0], tx0), min(b[1], ty0), max(b[2], tx1), max(b[3], ty1)), kind)
+            grew = True
+            continue
+        if len(held) == 1:
+            page, b, kind = pics[held[0]]
+            pics[held[0]] = (page, (min(b[0], tx0), min(b[1], ty0), max(b[2], tx1), max(b[3], ty1)), kind)
+        else:
+            def gap(l, b):
+                cx, cy = (l.x0 + l.x1) / 2, (l.y0 + l.y1) / 2
+                return max(b[0] - cx, 0, cx - b[2]) + max(b[1] - cy, 0, cy - b[3])
+            for i in t.members:
+                l = ls[i]
+                k = min(held, key=lambda k: gap(l, pics[k][1]))
+                page, b, kind = pics[k]
+                pics[k] = (page, (min(b[0], l.x0), min(b[1], l.y0), max(b[2], l.x1), max(b[3], l.y1)), kind)
+        grew = True
+    return grew
+
+
+_DISPLAY = {"title", "heading", "section_label", "author", "running_head", "table_caption", "figure_caption"}
+
+
+def _picture_members(p: PageInfo, ls: list[TextLine], kinds: list[str], pics: list | None = None) -> tuple[list, dict[int, int], dict[int, list[int]]]:
+    """The pictures of a page (photographs and drawings the cleaner found) and the lines inside them.
+
+    Returns the pictures as (page, box, kind), {line index: picture index} for every line whose centre falls
+    inside a picture (the smallest, if pictures nest), and {line index: [picture indices]} for pictures with no
+    line inside: each stands before that line (the first line below its top that overlaps it across), or at the
+    end of the page (index len(ls)). A box holding running text (half its lines or more are lines of five words
+    or more) is not taken for a picture: a mistaken box must not swallow a column of text."""
+    if pics is None:
+        boxes = list(getattr(p, "pictures", []) or [])
+        drawings = {tuple(d) for d in getattr(p, "drawings", []) or []}
+        pics = [(p.number, tuple(int(v) for v in b), "drawing" if tuple(b) in drawings else "photograph") for b in boxes]
+        # a picture inside another (a legend's swatch inside a map) is part of it
+        within = lambda a, b: a is not b and a[0] >= b[0] and a[1] >= b[1] and a[2] <= b[2] and a[3] <= b[3]
+        pics = [q for q in pics if not any(within(q[1], o[1]) for o in pics)]
+    if not pics:
+        return [], {}, {}
+    inside: dict[int, list[int]] = {}
+    lh = float(np.median([l.y1 - l.y0 for l in ls])) if ls else 0.0
+    for i, l in enumerate(ls):
+        cx, cy = (l.x0 + l.x1) / 2, (l.y0 + l.y1) / 2
+        # a drawing's frame and the specks along it sit on its edge: a little slack, for what is not text
+        pad = lambda kind: 0.4 * lh if kind == "drawing" and kinds[i] in ("figure", "table", "noise", "other") else 0.0
+        hold = [k for k, (_, b, kd) in enumerate(pics) if b[0] - pad(kd) <= cx <= b[2] + pad(kd) and b[1] - pad(kd) <= cy <= b[3] + pad(kd)]
+        if hold:
+            k = min(hold, key=lambda k: (pics[k][1][2] - pics[k][1][0]) * (pics[k][1][3] - pics[k][1][1]))
+            inside.setdefault(k, []).append(i)
+    fig_of: dict[int, int] = {}
+    for k, idx in inside.items():
+        prose = sum(len(_WORDY.findall(ls[i].text)) >= 5 for i in idx)
+        if prose >= 0.5 * len(idx) and prose >= 2:
+            continue
+        # A photograph is painted out before reading, so nothing in it is read. Words read inside a
+        # "photograph" that the structure step calls text (a title on a shaded band, a table's shaded header)
+        # mean the box is a shaded panel of print: not a picture.
+        if pics[k][2] == "photograph" and any(kinds[i] not in ("figure", "noise", "other") for i in idx):
+            continue
+        # A drawing round nothing but a title or a heading is an ornamental frame (a cartouche), not a picture.
+        if pics[k][2] == "drawing" and all(kinds[i] in _DISPLAY for i in idx):
+            continue
+        for i in idx:
+            fig_of[i] = k
+    held = set(fig_of.values())
+    before: dict[int, list[int]] = {}
+    for k, (_, b, _) in enumerate(pics):
+        if k in held or k in inside:
+            continue  # placed with its words, or not a picture (running text, a shaded panel of print)
+        at = next((i for i, l in enumerate(ls) if i not in fig_of and l.y0 >= b[1] and min(l.x1, b[2]) - max(l.x0, b[0]) > 0), len(ls))
+        before.setdefault(at, []).append(k)
+    return pics, fig_of, before
+
+
+def _label_order(labels: list[TextLine], ls: list[TextLine]) -> list[TextLine]:
+    """The words inside a picture in the order one reads them: band by band down the picture, across each band
+    in the page's direction (right to left unless the page's text is mostly Latin)."""
+    from .tables import _bands
+    from .viewer import _dir
+
+    if len(labels) < 2:
+        return labels
+    rtl = _dir(" ".join(l.text for l in ls)) == "rtl"
+    lh = float(np.median([l.y1 - l.y0 for l in labels]))
+    bands = sorted(_bands(labels, lh), key=lambda b: min(l.y0 for l in b))
+    return [l for band in bands for l in sorted(band, key=lambda l: -l.x1 if rtl else l.x0)]
 
 
 _TEXT = {"paragraph", "list_item", "reference", "footnote", "abstract", "other", "standfirst", "pull_quote", "verse", "affiliation",
@@ -905,7 +1076,7 @@ def _page_furniture(infos: list[PageInfo], blocks: list[Block]) -> None:
     on at least two pages."""
     by_no = {p.number: p for p in infos}
     carried = {id(b.parent) for b in blocks if b.parent is not None}
-    lone = [b for b in blocks if len(b.lines) == 1 and b.table is None and b.parent is None and id(b) not in carried and b.type in _OVERRULE]
+    lone = [b for b in blocks if len(b.lines) == 1 and b.table is None and b.picture is None and b.parent is None and id(b) not in carried and b.type in _OVERRULE]
 
     def band(b) -> str:
         p = by_no[b.page]
@@ -1069,6 +1240,10 @@ def to_master(doc_id: str, infos: list[PageInfo], blocks: list[Block], dpi: int 
                 else:
                     parts.append({"page": page, "regions": boxes, "line_boxes": lines, "line_texts": texts})
         entry = {"id": b.id, "type": b.type, "text": join_lines([g.text for g in group]), "parts": parts}
+        if b.picture is not None:
+            _picture_entry(entry, b, dpi)
+        elif b.type == "equation" and EQUATION_PICTURE and parts:
+            _equation_entry(entry, group, infos, dpi)
         if b.type == "table" and b.table is not None:
             # one region per page: the table's own box, not the boxes of the columns its cells fell into
             parts = [{"page": g.table.page, "regions": [[round(v / dpi, 3) for v in g.table.box]],
@@ -1095,10 +1270,54 @@ def to_master(doc_id: str, infos: list[PageInfo], blocks: list[Block], dpi: int 
     }
 
 
+EQUATION_PICTURE = True  # an equation block is shown as its picture: nothing here can transcribe a formula
+EQ_MARGIN = 0.04  # inch of scan kept round an equation's lines
+
+
+def shows_words(text: str) -> bool:
+    """Three words or more of three letters or more (Arabic or Latin): a line of running text the structure step
+    took for a formula, or a formula written out in words. Its text is shown as well as its picture."""
+    return len(_WORDY.findall(strip_marks(text))) >= 3
+
+
+def _picture_entry(entry: dict, b: Block, dpi: int) -> None:
+    """A figure made from a picture: one region, the picture's box (its labels' line boxes stay in line_boxes); the
+    master says it is shown as a picture, where, and what kind."""
+    page, box, kind = b.picture
+    inch = [round(v / dpi, 3) for v in box]
+    if not entry["parts"]:
+        entry["parts"] = [{"page": page, "regions": [inch], "line_boxes": [], "line_texts": []}]
+    else:
+        for part in entry["parts"]:
+            if part["page"] == page:
+                part["regions"] = [inch]
+    entry["shown_as"] = "picture"
+    entry["picture"] = [{"page": page, "box": inch, "kind": kind}]
+
+
+def _equation_entry(entry: dict, group: list[Block], infos: list[PageInfo], dpi: int) -> None:
+    """An equation block: the line reader cannot read a formula, so the viewer shows the formula's picture, a
+    crop of the scan round all its lines (a small margin, kept on the page). Its line texts stay as they are."""
+    size = {p.number: (p.width, p.height) for p in infos}
+    m = EQ_MARGIN * dpi
+    pics = []
+    for page in dict.fromkeys(l.page for g in group for l in g.lines):
+        ls = [l for g in group for l in g.lines if l.page == page]
+        W, H = size.get(page, (10 ** 9, 10 ** 9))
+        box = (max(min(l.x0 for l in ls) - m, 0), max(min(l.y0 for l in ls) - m, 0),
+               min(max(l.x1 for l in ls) + m, W), min(max(l.y1 for l in ls) + m, H))
+        pics.append({"page": page, "box": [round(v / dpi, 3) for v in box], "kind": "formula"})
+    entry["shown_as"] = "picture"
+    entry["picture"] = pics
+    entry["text_shown"] = shows_words(entry["text"])  # running text called an equation keeps its words in view
+
+
 def _page_entry(p: PageInfo, dpi: int) -> dict:
     """A page of the master file; with "warnings" (why it may not have been read properly) and "pictures"
     (photographs and drawings that were not read, boxes in inches) when it has any."""
     e = {"number": p.number, "width": round(p.width / dpi, 4), "height": round(p.height / dpi, 4), "unit": "inch"}
+    if p.turned:  # quarter turns (np.rot90's k) the page was given to stand it upright: boxes are on the turned page
+        e["turned"] = int(p.turned) % 4
     if p.warnings:
         e["warnings"] = list(p.warnings)
     if p.pictures:

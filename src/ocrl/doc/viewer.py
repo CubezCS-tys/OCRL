@@ -40,6 +40,11 @@ main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);flex:1;min-h
 .cap{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
 .scan{position:relative;margin:0 0 22px;background:#fff;box-shadow:0 1px 4px #0002}
 .scan img{display:block;width:100%;height:auto}
+.scan .pimg{display:block;width:100%;background-size:100% 100%;background-repeat:no-repeat}
+.crop{display:block;max-width:100%;background-repeat:no-repeat;background-color:#fff;border:1px solid var(--line);border-radius:3px;margin:2px 0 4px}
+.pic{font:12px "Segoe UI",sans-serif;color:var(--c);margin:0 0 2px}
+.labels{font:500 13px/1.7 "Noto Naskh Arabic","Amiri","Traditional Arabic",serif;color:var(--muted);margin-top:2px}.labels .ln{margin-inline-end:.9em}
+details.rd summary{cursor:pointer;font:12px "Segoe UI",sans-serif;color:var(--muted)}details.rd .txt{font-size:15px;color:var(--muted)}
 .box{position:absolute;border:1.5px solid var(--c);background:color-mix(in srgb,var(--c) 10%,transparent);border-radius:3px;cursor:pointer}
 .box.aside{border-style:dashed;background:none}
 .box b{position:absolute;top:-9px;right:-9px;min-width:19px;height:19px;padding:0 4px;border-radius:10px;background:var(--c);color:#fff;font:600 11px/19px "Segoe UI",sans-serif;text-align:center}
@@ -174,6 +179,44 @@ def _fold_figures(items: list) -> list[str]:
     return out
 
 
+CROP_PX_INCH = 150  # a picture in the text is drawn at this many CSS pixels an inch of the scan (never wider than the column)
+
+
+def _crop(pic: dict, pg: dict) -> str:
+    """A piece of the scan shown in the text, cut from the page image already embedded for the scan: the page
+    image is the background of a box the crop's shape, sized and shifted so that only the crop shows. No pixels
+    are embedded a second time."""
+    x0, y0, x1, y1 = pic["box"]
+    W, H = pg["width"], pg["height"]
+    fw, fh = max(min((x1 - x0) / W, 1.0), 1e-3), max(min((y1 - y0) / H, 1.0), 1e-3)
+    px = 100 * (x0 / W) / (1 - fw) if fw < 0.9999 else 0.0
+    py = 100 * (y0 / H) / (1 - fh) if fh < 0.9999 else 0.0
+    return (f'<div class="crop pi{pic["page"]}" role="img" aria-label="{html.escape(pic.get("kind", "picture"))} on scan page {pic["page"]}" '
+            f'style="width:{(x1 - x0) * CROP_PX_INCH:.0f}px;aspect-ratio:{x1 - x0:.3f}/{y1 - y0:.3f};'
+            f'background-size:{100 / fw:.3f}% {100 / fh:.3f}%;background-position:{px:.3f}% {py:.3f}%"></div>')
+
+
+def _picture_html(b: dict, master: dict, spans: str, d: str) -> str:
+    """A block shown as a picture (shown_as: picture): the crop of the scan, and under it the words. A figure's
+    words printed inside it are listed small beneath as its labels. An equation's reading is tucked away (the
+    reader cannot read formulas), unless it is mostly words, when it may be running text called a formula."""
+    pages = {p["number"]: p for p in master["pages"]}
+    crops = "".join(_crop(pc, pages[pc["page"]]) for pc in b["picture"] if pc["page"] in pages)
+    lang = "ar" if d == "rtl" else "en"
+    if b["type"] == "equation":
+        note = '<div class="pic">Equation shown as a picture: formulas are not transcribed</div>'
+        if not spans:
+            return note + crops
+        if b.get("text_shown"):
+            return note + crops + f'<div class="txt" dir="{d}" lang="{lang}">{spans}</div>'
+        return (note + crops + f'<details class="rd"><summary>what the reader made of it</summary>'
+                f'<div class="txt" dir="{d}" lang="{lang}">{spans}</div></details>')
+    kind = {"drawing": "drawing (a map, a chart)", "photograph": "photograph"}.get(b["picture"][0].get("kind"), "picture")
+    n = sum(1 for part in b["parts"] for t in part.get("line_texts", []) if t.strip())
+    note = f'<div class="pic">Figure: a {kind}, shown as a picture' + (f"; {n} label{'s' if n > 1 else ''} read inside it" if n else "") + "</div>"
+    return note + crops + (f'<div class="labels" dir="{d}" lang="{lang}">{spans}</div>' if spans else "")
+
+
 def _page_warnings(master: dict, number: int) -> str:
     """A banner over a scan page that may not have been read properly (pipeline._warn), and the lines that say so."""
     pg = next((p for p in master["pages"] if p["number"] == number), {})
@@ -221,23 +264,28 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
             pg = next(p for p in master["pages"] if p["number"] == part["page"])
             warns = part.get("line_warnings") or [[] for _ in part["line_boxes"]]  # pipeline._warn: not read properly
             for (x0, y0, x1, y1), t, w in zip(part["line_boxes"], part["line_texts"], warns):
-                if not t and not w:
-                    continue
+                if not t.strip() and (not w or (b.get("shown_as") == "picture" and b["type"] == "figure")):
+                    continue  # a picture's unread specks are not labels: the picture itself shows them
                 n_line += 1
                 boxes.setdefault(part["page"], []).append(
                     f'<div class="lb{" warned" if w else ""}" id="L{n_line}" style="left:{100 * x0 / pg["width"]:.2f}%;top:{100 * y0 / pg["height"]:.2f}%;'
                     f'width:{100 * (x1 - x0) / pg["width"]:.2f}%;height:{100 * (y1 - y0) / pg["height"]:.2f}%"></div>')
                 got.append((t or "[?]", n_line, part["page"], w))
         out = ""
+        pic = b.get("shown_as") == "picture" and b["type"] == "figure"  # a picture's labels: each a word or two on its own
         for k, (t, n, pno, w) in enumerate(got):
             # a Latin word broken over two lines is shown whole, as the block's text has it (parse.join_sep)
-            joined = k + 1 < len(got) and join_sep(t, got[k + 1][0]) == ""
+            joined = not pic and k + 1 < len(got) and join_sep(t, got[k + 1][0]) == ""
             shown = t.rstrip()[:-1] if joined else t
             out += f'<span class="ln{" warned" if w else ""}" data-l="L{n}" title="scan page {pno}{html.escape(": not read properly: " + "; ".join(w)) if w else ""}">{html.escape(shown)}</span>' + ("" if joined or k + 1 == len(got) else " ")
         spans[b["id"]] = out
+    # each page image is embedded once, as a background both the scan and any picture cut from it in the text use
+    first = master["pages"][0]["number"]
+    pimg = "".join(f'.pi{i}{{background-image:url("{_png(img)}")}}' for i, img in enumerate(images, first))
     scans = "".join(
-        f'<p class="pg" id="s{i}">scan page {i}</p>{_page_warnings(master, i)}<div class="scan"><img src="{_png(img)}" decoding="async" alt="Scan of page {i}">{"".join(boxes.get(i, []))}</div>'
-        for i, img in enumerate(images, master["pages"][0]["number"]))
+        f'<p class="pg" id="s{i}">scan page {i}</p>{_page_warnings(master, i)}<div class="scan"><div class="pimg pi{i}" role="img" aria-label="Scan of page {i}" '
+        f'style="aspect-ratio:{img.shape[1]}/{img.shape[0]}"></div>{"".join(boxes.get(i, []))}</div>'
+        for i, img in enumerate(images, first))
     captions = {b["id"]: b["text"] for b in master["blocks"] if b["type"] == "table_caption"}
     doc, at = [], None
     for b in master["blocks"]:
@@ -247,11 +295,13 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
         if p is not None and (at is None or p > at):  # a marker where the text reaches a new scan page
             doc += [None, f'<p class="dpg" id="d{p}">page {p}</p>']; at = p
         d = _dir(b["text"])
-        doc.append((b, p) if b["type"] == "figure" and "aside" not in b else None)
+        shown = b.get("shown_as") == "picture" and b.get("picture")
+        doc.append((b, p) if b["type"] == "figure" and "aside" not in b and not shown else None)
         doc.append(
             f'<div class="blk {b["type"]}{" aside" if "aside" in b else ""}" data-b="{b["id"]}" style="--c:{COLORS.get(b["type"], "#6b6b6b")}">'
             f'<div class="tag">{"" if "aside" in b else "<b>" + str(b["order"]) + "</b>"}{name(b["type"])}</div>'
             + (f'<div>{_table_html(b, captions)}</div></div>' if "table" in b else
+               f'<div>{_picture_html(b, master, spans.get(b["id"]) or html.escape(b["text"]), d)}</div></div>' if shown else
                f'<div class="txt" dir="{d}" lang="{"ar" if d == "rtl" else "en"}">{spans.get(b["id"]) or html.escape(b["text"]) or "&nbsp;"}</div></div>'))
     doc = "".join(_fold_figures(doc))
     nums = [p["number"] for p in master["pages"]]
@@ -261,7 +311,7 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
     speed = f" Parsed in {seconds:.0f} seconds ({seconds / max(len(images), 1):.1f} a page) on this machine's CPU." if seconds else ""
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{master['id']} · parsed locally</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@500;700&display=swap"><style>{_CSS}</style></head><body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@500;700&display=swap"><style>{_CSS}{pimg}</style></head><body>
 <header><h1>{master['id']} <span>· whole document, {len(images)} pages · parsed locally</span></h1>
 <div class="by">Text: {html.escape(master['made_by']['text'])}. Structure: {html.escape(master['made_by']['structure'])}{speed}</div>
 <div class="legend">{legend}</div>{nav}</header>
