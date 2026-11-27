@@ -48,6 +48,15 @@ main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:calc(
 .blk.title .txt{font-size:25px;text-align:center}.blk.author .txt,.blk.affiliation .txt{text-align:center}
 .blk.heading .txt{font-weight:700}.blk.aside .txt{color:var(--muted);font-size:15px}
 .blk.table .txt{font-size:14px;color:var(--muted)}
+.cell{position:absolute;border:1px dashed color-mix(in srgb,var(--c) 55%,transparent);pointer-events:none}
+.cell.empty{border-style:dotted;border-color:color-mix(in srgb,var(--c) 30%,transparent)}
+table.grid{border-collapse:collapse;margin:2px 0;font:500 15px/1.6 "Noto Naskh Arabic","Amiri","Traditional Arabic",serif;color:var(--ink);background:#fff}
+table.grid td,table.grid th{border:1px solid #c9c1ae;padding:3px 8px;vertical-align:top;text-align:start;overflow-wrap:break-word}
+table.grid th{background:#efe9dc;font-weight:700}
+table.grid caption{caption-side:top;text-align:start;font-weight:700;padding:0 0 5px;color:var(--c)}
+table.grid td.empty{background:repeating-linear-gradient(135deg,#fff 0 5px,#f6f3ec 5px 10px)}
+.tblnote{font:12px "Segoe UI",sans-serif;color:var(--muted);margin-top:3px}
+.blk.table .txt,.blk.table{overflow-x:auto}
 @media(max-width:900px){main{grid-template-columns:1fr;height:auto}.pane{overflow:visible}}
 """
 
@@ -64,7 +73,37 @@ document.querySelectorAll('[data-b]').forEach(e=>{
 def _png(gray: np.ndarray, width: int = 900) -> str:
     f = width / gray.shape[1]
     small = cv2.resize(gray, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
-    return "data:image/png;base64," + base64.b64encode(cv2.imencode(".png", small, [cv2.IMWRITE_PNG_COMPRESSION, 9])[1].tobytes()).decode()
+    # Level 6, not 9: the same pixels, files about 3% larger, and about ten times faster to write
+    # (0.02 s a page instead of 0.25 s).
+    return "data:image/png;base64," + base64.b64encode(cv2.imencode(".png", small, [cv2.IMWRITE_PNG_COMPRESSION, 6])[1].tobytes()).decode()
+
+
+def _table_html(b: dict, captions: dict) -> str:
+    """A table block as an HTML table, columns in the table's own direction, empty places hatched."""
+    t = b["table"]
+    rtl = t["direction"] == "rtl"
+
+    def row(cells, tag):
+        out = []
+        for c in cells:
+            if c in ("^", "<"):
+                continue  # covered by a cell that spans here
+            if c is None:
+                out.append(f'<{tag} class="empty"></{tag}>')
+                continue
+            span = (f' rowspan="{c["rowspan"]}"' if c.get("rowspan") else "") + (f' colspan="{c["colspan"]}"' if c.get("colspan") else "")
+            out.append(f"<{tag}{span}>{html.escape(c['text'])}</{tag}>")
+        return "<tr>" + "".join(out) + "</tr>"
+
+    cap = captions.get(t.get("caption"), "")
+    # one tbody for all: a header cell may span down into the first rows, which a thead would cut off
+    body = ["<tbody>"] + ([row(t["header"], "th")] if t["header"] else []) + [row(r, "td") for r in t["rows"]] + ["</tbody>"]
+    n = len(t["rows"]) + bool(t["header"])
+    note = (f'{n} rows × {t["columns"]} columns, {"ruled" if t["ruled"] else "unruled: grid from alignment"}'
+            + (", carries on over the page" if len(b["parts"]) > 1 else "")
+            + (f', header repeated on the next page ({len(t["repeated_header_lines"])} lines, not shown again)' if t.get("repeated_header_lines") else ""))
+    return (f'<table class="grid" dir="{"rtl" if rtl else "ltr"}" lang="{"ar" if rtl else "en"}">'
+            + (f'<caption data-b="{t["caption"]}" style="--c:{COLORS["table_caption"]}">{html.escape(cap)}</caption>' if cap else "") + "".join(body) + f'</table><div class="tblnote">{note}</div>')
 
 
 def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 300, seconds: float = 0.0) -> None:
@@ -74,6 +113,14 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
     boxes: dict[int, list[str]] = {}
     for b in master["blocks"]:
         aside = "aside" in b
+        if "table" in b:  # the table's cells, lightly, so one can see what was grouped
+            t = b["table"]
+            for c in [c for r in ([t["header"]] if t["header"] else []) + t["rows"] for c in r if isinstance(c, dict)]:
+                pg = next(p for p in master["pages"] if p["number"] == c["page"])
+                x0, y0, x1, y1 = c["box"]
+                boxes.setdefault(c["page"], []).append(
+                    f'<div class="cell{"" if c["text"] else " empty"}" style="left:{100 * x0 / pg["width"]:.2f}%;top:{100 * y0 / pg["height"]:.2f}%;'
+                    f'width:{100 * (x1 - x0) / pg["width"]:.2f}%;height:{100 * (y1 - y0) / pg["height"]:.2f}%;--c:{COLORS["table"]}"></div>')
         for part in b["parts"]:
             pg = next(p for p in master["pages"] if p["number"] == part["page"])
             for x0, y0, x1, y1 in part["regions"]:
@@ -85,11 +132,13 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
     scans = "".join(
         f'<p class="pg">scan page {i}</p><div class="scan"><img src="{_png(img)}" alt="Scan of page {i}">{"".join(boxes.get(i, []))}</div>'
         for i, img in enumerate(images, master["pages"][0]["number"]))
+    captions = {b["id"]: b["text"] for b in master["blocks"] if b["type"] == "table_caption"}
     doc = "".join(
         f'<div class="blk {b["type"]}{" aside" if "aside" in b else ""}" data-b="{b["id"]}" style="--c:{COLORS.get(b["type"], "#6b6b6b")}">'
         f'<div class="tag">{"" if "aside" in b else "<b>" + str(b["order"]) + "</b>"}{name(b["type"])}</div>'
-        f'<div class="txt" lang="ar">{html.escape(b["text"]) or "&nbsp;"}</div></div>'
-        for b in master["blocks"] if b["type"] != "noise")
+        + (f'<div>{_table_html(b, captions)}</div></div>' if "table" in b else
+           f'<div class="txt" lang="ar">{html.escape(b["text"]) or "&nbsp;"}</div></div>')
+        for b in master["blocks"] if b["type"] != "noise" and "caption_of" not in b)
     legend = "".join(f'<span><i style="background:{COLORS[t]}"></i>{name(t)} · {counts[t]}</span>' for t in used)
     speed = f" Parsed in {seconds:.0f} seconds ({seconds / max(len(images), 1):.1f} a page) on this machine's CPU." if seconds else ""
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

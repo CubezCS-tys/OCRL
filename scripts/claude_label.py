@@ -1,7 +1,9 @@
 """Have a Claude model label pages through the Anthropic API: the same numbered scan, lines and guide as every other labeller.
 
-Two ways to run: `now` sends requests directly (for a small check), `batch` submits everything as one Message Batch
-at half price and `collect` fetches the answers when it has ended. The key is read from ~/.config/ocrl/anthropic_key
+Two ways to run: `now` sends requests directly (for a small check), `batch` submits Message Batches at half price
+(built and sent --batch-size pages at a time, never all in memory; progress kept in <out>/_batch.json so a rerun resumes,
+--est keeps logged spend plus pages in flight under --cap, --retry resends failed pages once) and `collect` fetches the
+answers of every ended batch (each batch is read once; per-page notes go to <out>/_notes.jsonl). The key is read from ~/.config/ocrl/anthropic_key
 (or the usual environment variables) and is never printed. Spend is logged per answer.
 
     uv run --with anthropic python scripts/claude_label.py now     --inputs out/labeller/dev_inputs --out out/labeller/dev_haiku_api
@@ -43,6 +45,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("what", choices=["now", "batch", "collect"]); ap.add_argument("--inputs", required=True); ap.add_argument("--out", required=True)
 ap.add_argument("--model", default="claude-haiku-5-5"); ap.add_argument("--effort", default="high", help="measured on 70 judged pages: low 94.6%, medium 96.3%, high 98.2% of line types"); ap.add_argument("--workers", type=int, default=6)
 ap.add_argument("--cap", type=float, default=8.0, help="stop when logged spend for this model reaches this many dollars"); ap.add_argument("--limit", type=int, default=0)
+ap.add_argument("--batch-size", type=int, default=400); ap.add_argument("--est", type=float, default=0.75, help="batch: expected dollars per 1,000 pages, to keep submitted work under the cap")
+ap.add_argument("--retry", action="store_true", help="batch: resubmit, once, pages whose batch was collected but that have no answer")
 a = ap.parse_args()
 GUIDE = Path("out/labeller/guide.md").read_text(encoding="utf-8")
 
@@ -87,7 +91,7 @@ def keep(name: str, msg, half: bool) -> str:
 
 Path(a.out).mkdir(parents=True, exist_ok=True); SPEND.parent.mkdir(parents=True, exist_ok=True)
 todo = sorted(p for p in Path(a.inputs).iterdir() if (p / "lines.json").exists() and not (Path(a.out) / f"{p.name}.json").exists())
-if a.limit: todo = todo[: a.limit]
+if a.limit and a.what == "now": todo = todo[: a.limit]
 c = client(); notes = {}; started = time.strftime("%Y-%m-%d %H:%M:%S")
 if a.what == "now":
     def one(d):
@@ -100,27 +104,60 @@ if a.what == "now":
             return d.name, f"failed: {type(e).__name__}"
     with ThreadPoolExecutor(a.workers) as pool:
         for name, note in pool.map(one, todo): notes[name] = note
-elif a.what == "batch":
-    ids = {}
-    # custom ids must be short and plain; keep the mapping beside the answers
-    reqs = []
-    for k, d in enumerate(todo):
-        ids[f"p{k:06d}"] = d.name; reqs.append({"custom_id": f"p{k:06d}", "params": params(d)})
-    made = []
-    for i in range(0, len(reqs), 400):  # a page is about 0.4 MB as a request; a batch may hold 256 MB
-        b = c.messages.batches.create(requests=reqs[i : i + 400]); made.append(b.id)
-    json.dump({"batches": made, "ids": ids}, open(Path(a.out) / "_batch.json", "w"))
-    print(f"submitted {len(reqs)} pages in {len(made)} batches"); sys.exit()
 else:
-    meta = json.load(open(Path(a.out) / "_batch.json"))
-    for bid in meta["batches"]:
-        b = c.messages.batches.retrieve(bid)
-        if b.processing_status != "ended":
-            print(f"batch {bid[-8:]}: {b.processing_status}, {b.request_counts.processing} still processing, {b.request_counts.succeeded} done"); continue
-        for r in c.messages.batches.results(bid):
-            name = meta["ids"][r.custom_id]
-            if (Path(a.out) / f"{name}.json").exists(): continue
-            notes[name] = keep(name, r.result.message, True) if r.result.type == "succeeded" else r.result.type
+    # Batches are built, submitted and dropped one at a time (a page is about 0.4 MB as a request), and _batch.json is
+    # rewritten after each one, so an interrupted run resumes without sending a page twice.
+    # _batch.json: batches (ids, in order), ids (custom id -> page folder), members (batch id -> custom ids),
+    # collected (batches whose results were all read; never read twice, so nothing is billed twice in the log),
+    # retried (pages sent a second time after an error, expiry or unusable answer; each page gets one retry).
+    mf = Path(a.out) / "_batch.json"
+    meta = json.load(open(mf)) if mf.exists() else {}
+    for k, v in (("batches", []), ("ids", {}), ("members", {}), ("collected", []), ("retried", [])):
+        meta.setdefault(k, v)
+
+    def save():
+        json.dump(meta, open(str(mf) + ".tmp", "w")); Path(str(mf) + ".tmp").replace(mf)
+
+if a.what == "batch":
+    sent = set(meta["ids"].values()); collected = set(meta["collected"])
+    pending = sum(len(meta["members"].get(b, [])) for b in meta["batches"] if b not in collected)
+    if a.retry:  # pages whose batch was read but that have no answer file: errored, expired or unusable; once each
+        done_ids = {c for b in collected for c in meta["members"].get(b, [])}
+        failed = {meta["ids"][c] for c in done_ids} - {p.stem for p in Path(a.out).glob("*.json")} - set(meta["retried"])
+        todo = [d for d in todo if d.name in failed]
+    else:
+        todo = [d for d in todo if d.name not in sent]
+    if a.limit: todo = todo[: a.limit]
+    made = 0
+    for i in range(0, len(todo), a.batch_size):
+        part = todo[i : i + a.batch_size]
+        projected = spent() + (pending + len(part)) * a.est / 1000
+        if projected > a.cap:
+            print(f"stopping before {len(todo) - i} pages: logged ${spent():.2f} + {pending + len(part)} pages in flight at ${a.est}/1,000 would pass the ${a.cap} cap"); break
+        k0 = len(meta["ids"])
+        reqs = [{"custom_id": f"p{k0 + k:06d}", "params": params(d)} for k, d in enumerate(part)]
+        b = c.messages.batches.create(requests=reqs)
+        meta["batches"].append(b.id); meta["members"][b.id] = [r["custom_id"] for r in reqs]
+        for r, d in zip(reqs, part): meta["ids"][r["custom_id"]] = d.name
+        if a.retry: meta["retried"] += [d.name for d in part]
+        save(); del reqs
+        made += 1; pending += len(part)
+        print(f"batch {made} ({b.id[-8:]}): {len(part)} pages submitted", flush=True)
+    print(f"submitted {sum(len(meta['members'][x]) for x in meta['batches'][-made:]) if made else 0} pages in {made} batches; {len(meta['batches'])} batches in all"); sys.exit()
+elif a.what == "collect":
+    with open(Path(a.out) / "_notes.jsonl", "a") as nf:
+        for bid in meta["batches"]:
+            if bid in meta["collected"]: continue
+            b = c.messages.batches.retrieve(bid)
+            if b.processing_status != "ended":
+                print(f"batch {bid[-8:]}: {b.processing_status}, {b.request_counts.processing} still processing, {b.request_counts.succeeded} done"); continue
+            for r in c.messages.batches.results(bid):
+                name = meta["ids"][r.custom_id]
+                if (Path(a.out) / f"{name}.json").exists(): continue
+                notes[name] = keep(name, r.result.message, True) if r.result.type == "succeeded" else r.result.type
+                nf.write(json.dumps({"page": name, "batch": bid, "note": notes[name]}) + "\n")
+            meta["collected"].append(bid); save()
+    print(f"{len(meta['collected'])} of {len(meta['batches'])} batches collected")
 bad = {n: v for n, v in notes.items() if v != "ok"}
 for n, v in list(bad.items())[:12]: print(f"  {n}: {v}")
 rows = [json.loads(l) for l in SPEND.read_text().splitlines() if l.strip()] if SPEND.exists() else []

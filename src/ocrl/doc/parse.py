@@ -11,6 +11,7 @@ would also make from the page's shape; `score_structure.py` says how often it is
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import cv2
@@ -20,6 +21,7 @@ from rapidfuzz.distance import Levenshtein
 from ..blobs.layout import binarize
 from ..pipeline import OCR
 from ..text import DIGITS, strip_marks
+from .tables import find_tables
 
 _MARKER = re.compile(rf"^\(?\s?[{DIGITS}]{{1,3}}\s?\)?\s?[-.)ـ]|^[-•*]\s|^\(\s?[{DIGITS}]{{1,3}}\s?\)|^[أ-ي]\s?[-)]\s")
 _REF_MARK = re.compile(rf"^\(?\s?[{DIGITS}][{DIGITS}\s]{{0,4}}\)|^[{DIGITS}]{{1,3}}\s?[-.]\s")
@@ -50,6 +52,8 @@ class Block:
     order: int | None = None
     id: str = ""
     parent: "Block | None" = None  # the block this one carries on from, over a column or page break
+    table: object = None  # for a table: its grid (ocrl.doc.tables.Table)
+    caption: "Block | None" = None  # for a table: its caption block
 
     @property
     def text(self) -> str:
@@ -74,6 +78,11 @@ class PageInfo:
     rules: list[tuple[int, int, int, int]]  # long horizontal strokes
     frames: list[tuple[int, int, int, int]]  # ruled boxes: tables
     notes: list[str] = field(default_factory=list)
+    # Ruled lines as the cleaner found them, for putting tables together: every rule across the page
+    # (those of a table's grid and those standing alone) and every upright.
+    grid: list[tuple[int, int, int, int]] = field(default_factory=list)
+    uprights: list[tuple[int, int, int, int]] = field(default_factory=list)
+    short: list[tuple[int, int, int, int]] = field(default_factory=list)  # short rules inside ruled frames (tables.short_rules)
 
 
 def _strokes(gray: np.ndarray) -> tuple[list, list, float]:
@@ -107,7 +116,15 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
         from ..structure.features import ink_features
         for l, f in zip(lines, ink_features(gray, np.array([[l.x0, l.y0, l.x1, l.y1] for l in lines], np.float32))):
             l.ink = tuple(float(v) for v in f)
-    return PageInfo(number, gray.shape[1], gray.shape[0], lines, cols, rules, frames, notes)
+    from ..blobs.clean import clean_page
+    # The reader cleaned this page already and kept only its image; cleaning again (about 0.7 s) gives
+    # back the ruled lines it painted out, which are the exact grid of a ruled table.
+    cleaned = clean_page(gray)
+    from .tables import short_rules
+    grid = cleaned.grid + cleaned.rules
+    lh = float(np.median([l.y1 - l.y0 for l in lines])) if lines else 30.0
+    return PageInfo(number, gray.shape[1], gray.shape[0], lines, cols, rules, frames, notes,
+                    grid, cleaned.uprights, short_rules(gray, grid, cleaned.uprights, lh, [(l.x0, l.y0, l.x1, l.y1) for l in lines]))
 
 
 def _cut_blocks(page: PageInfo) -> list[Block]:
@@ -157,13 +174,21 @@ def _similar(a: str, b: str) -> float:
     return 1 - Levenshtein.distance(a, b) / max(len(a), len(b), 1)
 
 
-def parse(ocr: OCR, pages: list[np.ndarray], first: int = 1, typer=None) -> tuple[list[PageInfo], list[Block]]:
+def parse(ocr: OCR, pages: list[np.ndarray], first: int = 1, typer=None,
+          progress: Callable[[int, int], None] | None = None) -> tuple[list[PageInfo], list[Block]]:
     """`first` is the page number of the first image, for a document parsed from the middle.
 
     With a `typer` (ocrl.structure.tag.Typer), block cuts and types come from the trained structure
     model; without one, from the hand-written rules below.
+
+    `progress`, if given, is called as progress(pages_read, pages_total) after each page is read.
+    It only reports; it does not change what is parsed.
     """
-    infos = [read_page(ocr, g, n) for n, g in enumerate(pages, first)]
+    infos = []
+    for n, g in enumerate(pages, first):
+        infos.append(read_page(ocr, g, n))
+        if progress is not None:
+            progress(len(infos), len(pages))
     if typer is not None:
         return infos, _typed_blocks(infos, typer)
     by_no = {p.number: p for p in infos}
@@ -328,14 +353,26 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             continue
         ink = np.array([l.ink for l in ls], np.float32) if all(len(l.ink) == 3 for l in ls) else None
         roles, starts, _ = typer.tag(np.array([[l.x0, l.y0, l.x1, l.y1] for l in ls]), [l.text for l in ls], p.width, p.height, ink)
+        kinds = [TO_TYPE.get(r, "other") for r in roles]
+        # One block per table, put together from its cells (tables.py), standing where its first line is read.
+        found = find_tables(p, ls, kinds)
+        owner = {i: t for t in found for i in t.members}
+        placed: set[int] = set()
         cur: Block | None = None
-        for ln, role, start in zip(ls, roles, starts):
-            kind = TO_TYPE.get(role, "other")
-            if kind == "table":  # one block per table: its cells are lines of the same block
-                if cur is not None and cur.type == "table" and cur.lines[-1].page == ln.page:
-                    cur.lines.append(ln)
-                    continue
-                cur = Block([ln], "table"); out.append(cur)
+        for i, (ln, kind, start) in enumerate(zip(ls, kinds, starts)):
+            if i in owner:
+                t = owner[i]
+                if id(t) not in placed:
+                    placed.add(id(t))
+                    lh = float(np.median([l.y1 - l.y0 for l in t.lines]))
+                    if len(t.lines) == 1 and not t.ruled and len(t.lines[0].text.strip()) < 4:
+                        cur = Block(t.lines, "noise")  # a speck or a letter on its own is not a table
+                    elif t.n_rows == 1 and not t.ruled and any(
+                            o is not t and o.n_rows > 1 and min(abs(o.box[1] - t.box[3]), abs(t.box[1] - o.box[3])) < 3 * lh for o in found):
+                        cur = Block(t.lines, "table_caption")  # one row of words over or under a table: its title
+                    else:
+                        cur = Block(t.lines, "table", table=t)
+                    out.append(cur)
                 continue
             same_place = cur is not None and (cur.lines[-1].page, cur.lines[-1].region) == (ln.page, ln.region)
             if cur is not None and cur.type == kind and same_place and start < 0.5 and kind not in ASIDE:
@@ -348,6 +385,7 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             out.append(cur)
             if kind not in ASIDE and kind not in ("table", "footnote", "figure"):
                 last_flow = cur
+    _join_tables(out)
     order = 0
     for i, b in enumerate(out):
         b.id = f"b{i}"
@@ -359,6 +397,102 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             order += 1
             b.order = order
     return out
+
+
+def _join_tables(blocks: list[Block]) -> None:
+    """A table that ends its page and one that opens the next, with the same columns, are one table;
+    and a caption directly above or below a table is that table's caption."""
+    from ..structure.tag import ASIDE
+    from .tables import continues
+
+    flow = [b for b in blocks if b.type not in ASIDE]
+    for a, b in zip(flow, flow[1:]):
+        if a.type == b.type == "table" and a.table is not None and b.table is not None and continues(a.table, b.table):
+            b.parent = a.parent or a
+    for i, b in enumerate(blocks):
+        if b.type != "table" or b.table is None:
+            continue
+        t = b.table
+        lh = float(np.median([l.y1 - l.y0 for l in b.lines]))
+        near = [o for o in blocks[max(i - 3, 0) : i + 4] if o.type == "table_caption" and o.page == b.page]
+        for o in sorted(near, key=lambda o: abs(blocks.index(o) - i)):
+            x0, y0, x1, y1 = o.box()
+            gap = t.box[1] - y1 if y1 <= t.box[1] + lh else y0 - t.box[3]
+            if -lh <= gap < 4 * lh and min(x1, t.box[2]) - max(x0, t.box[0]) > 0:
+                b.caption = o
+                break
+
+
+def _table_json(group: list[Block], dpi: int) -> dict:
+    """A table's grid for the master file: a header row and rows of cells, each row one entry per column in
+    reading order. A cell is {"text", "lines": its line boxes, "box": its place, "page"} with "rowspan" or
+    "colspan" when it covers more than one place; None is an empty place, "^" a place covered by the cell
+    above, "<" a place covered by the cell before it in the row. A table that carries on over the page is one
+    table: the next page's repeat of the header is not a row, its lines are listed in repeated_header_lines."""
+    from .tables import Cell, repeated_header
+
+    inch = lambda b: [round(v / dpi, 3) for v in b]
+    first = group[0].table
+
+    def cell(c, t):
+        if not isinstance(c, Cell):
+            return c
+        out = {"text": c.text, "lines": [inch((l.x0, l.y0, l.x1, l.y1)) for l in c.lines], "page": t.page, "box": inch(c.box)}
+        if c.rowspan > 1:
+            out["rowspan"] = c.rowspan
+        if c.colspan > 1:
+            out["colspan"] = c.colspan
+        return out
+
+    header, rows, repeated = [], [], []
+    for k, g in enumerate(group):
+        t = g.table
+        grid = t.grid()
+        start = 0
+        if k == 0 and t.header_rows:
+            header, start = [cell(c, t) for c in grid[0]], 1
+        elif k > 0 and repeated_header(first, t):
+            repeated += [inch((l.x0, l.y0, l.x1, l.y1)) for c in grid[0] if isinstance(c, Cell) for l in c.lines]
+            start = 1
+        for j, r in enumerate(grid[start:]):
+            row = [cell(c, t) for c in r]
+            if k > 0 and j == 0:
+                row = [None if c == "^" else c for c in row]  # nothing above it on this page
+                for col, top in enumerate(row):
+                    _carry_over(rows, col, top, row)
+            rows.append(row)
+    out = {"header": header, "rows": rows, "columns": first.n_cols, "direction": "rtl" if first.rtl else "ltr",
+           "ruled": first.ruled}
+    if repeated:
+        out["repeated_header_lines"] = repeated
+    cap = next((g.caption for g in group if g.caption is not None), None)
+    if cap is not None:
+        out["caption"] = cap.id
+    return out
+
+
+def _carry_over(rows: list[list], col: int, top, row: list) -> None:
+    """A cell that spans rows and is cut by the page break: an empty spanning cell at the foot of one page
+    and a filled cell at the head of the next, in the same column, are one cell (a category label beside a
+    group of rows that starts on one page and ends on the next). The label is printed on one side only."""
+    if not isinstance(top, dict) or not rows:
+        return
+    i = len(rows) - 1
+    while i > 0 and rows[i][col] == "^":
+        i -= 1
+    origin = rows[i][col]
+    if not isinstance(origin, dict) or origin["lines"] or not (origin.get("rowspan", 1) > 1 or top.get("rowspan", 1) > 1):
+        return
+    span = len(rows) - i + top.get("rowspan", 1)
+    origin.update({k: top[k] for k in ("text", "lines", "page", "box")})
+    origin["rowspan"] = span
+    row[col] = "^"
+
+
+def _table_text(table: dict) -> str:
+    """Plain text of a table: a row to a line, cells separated by a bar."""
+    rows = ([table["header"]] if table["header"] else []) + table["rows"]
+    return "\n".join(" | ".join(c["text"] if isinstance(c, dict) else "" for c in r) for r in rows)
 
 
 def to_master(doc_id: str, infos: list[PageInfo], blocks: list[Block], dpi: int = 300, reader: str = "", structure: str = "") -> dict:
@@ -381,6 +515,17 @@ def to_master(doc_id: str, infos: list[PageInfo], blocks: list[Block], dpi: int 
                 else:
                     parts.append({"page": page, "regions": [box], "line_boxes": lines})
         entry = {"id": b.id, "type": b.type, "text": " ".join(g.text for g in group), "parts": parts}
+        if b.type == "table" and b.table is not None:
+            # one region per page: the table's own box, not the boxes of the columns its cells fell into
+            parts = [{"page": g.table.page, "regions": [[round(v / dpi, 3) for v in g.table.box]],
+                      "line_boxes": [[round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1)] for l in g.table.lines]} for g in group]
+            entry["parts"] = parts
+            entry["table"] = _table_json(group, dpi)
+            entry["text"] = _table_text(entry["table"])
+        elif b.type == "table_caption":
+            of = next((o for o in blocks if o.caption is b), None)
+            if of is not None:
+                entry["caption_of"] = of.id
         if b.order is not None:
             entry["order"] = b.order
         else:

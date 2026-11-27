@@ -15,7 +15,8 @@
 #
 # Everything on the machine is lost at "down" except what was pulled. Spend is logged in out/gpu/gpu_spend.jsonl.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd); V=~/.local/venvs/vast/bin/vastai; OUT=$ROOT/out/gpu; mkdir -p $OUT $ROOT/out/box; LOG=$OUT/gpu_spend.jsonl
-BOX=$OUT/box.env; KEY=$HOME/.ssh/id_ed25519_vast
+# A second machine: set BOXNAME=reader (say) and every command acts on that one; its state is in out/gpu/box_reader.env.
+BOX=$OUT/box${BOXNAME:+_$BOXNAME}.env; KEY=$HOME/.ssh/id_ed25519_vast
 [ -f $BOX ] && . $BOX
 SSHO="-i $KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30"
 rsh() { ssh $SSHO -p "$PORT" "root@$HOST" "$@" 2>&1 | grep -v -i "welcome to vast\|have fun"; return ${PIPESTATUS[0]}; }  # ssh's own exit status, not grep's

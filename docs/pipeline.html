@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCRL: how the parser's models fit together</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+:root { --bg:#f5f7fa; --surface:#fff; --fg:#151b23; --muted:#586374; --line:#d3d9e2; --azure:#1464c8; --good:#1c7448; --bad:#b3261e; --warn:#9a5b00; --old:#8a94a3;
+  --idea:#7b3fb3; --teach:#0f766e; --rulefill:#eef1f5; --modelfill:#eaf2fc; --ideafill:#f4edfb; --testfill:#fdf4e4; --teachfill:#e8f5f3; --weakfill:#fdeeed;
+  --display:"Space Grotesk","Segoe UI",system-ui,sans-serif; --body:"Inter","Segoe UI",system-ui,sans-serif; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0e1217; --surface:#161b22; --fg:#e5e9ef; --muted:#98a3b3; --line:#2a323e; --azure:#6aa9f0; --good:#62cf9b; --bad:#f28b82; --warn:#e0a84a; --old:#6c7786;
+  --idea:#c49bf2; --teach:#4fd1c0; --rulefill:#1b2129; --modelfill:#14243a; --ideafill:#241a33; --testfill:#2b2213; --teachfill:#10282a; --weakfill:#2e1716; color-scheme:dark; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 var(--body); }
+main { max-width:1320px; margin:0 auto; padding:36px 20px 80px; display:flex; flex-direction:column; gap:32px; }
+h1,h2 { font-family:var(--display); font-weight:600; margin:0; text-wrap:balance; }
+h1 { font-size:29px; line-height:1.15; } h2 { font-size:20px; }
+p { margin:0; max-width:80ch; } .lede { color:var(--muted); font-size:16px; }
+section { display:flex; flex-direction:column; gap:14px; }
+figure { margin:0; background:var(--surface); border:1px solid var(--line); border-radius:5px; padding:16px; display:flex; flex-direction:column; gap:12px; }
+figcaption { color:var(--muted); font-size:13.5px; max-width:90ch; }
+figure svg { width:100%; height:auto; display:block; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+.tile { background:var(--surface); border:1.5px solid var(--line); border-radius:5px; padding:14px 16px; display:flex; flex-direction:column; gap:2px; }
+.tile .who { font-size:12px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); }
+.tile .big { font:600 30px/1.15 var(--display); font-variant-numeric:tabular-nums; } .tile .sub { color:var(--muted); font-size:13.5px; }
+ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; max-width:80ch; }
+.note { border-left:3px solid var(--warn); padding:2px 0 2px 12px; color:var(--muted); }
+
+/* legend + toggle */
+.bar { display:flex; flex-wrap:wrap; gap:18px 28px; align-items:center; justify-content:space-between; }
+.legend { display:flex; flex-wrap:wrap; gap:8px 18px; font-size:13px; color:var(--muted); }
+.legend span { display:inline-flex; align-items:center; gap:7px; }
+.sw { width:26px; height:16px; border-radius:3px; border:2px solid; display:inline-block; }
+.sw.rule { border-color:var(--old); background:var(--rulefill); }
+.sw.model { border-color:var(--azure); background:var(--modelfill); }
+.sw.teach { border-color:var(--teach); background:var(--teachfill); }
+.sw.test { border-color:var(--warn); background:var(--testfill); border-style:dotted; }
+.sw.idea { border-color:var(--idea); background:var(--ideafill); border-style:dashed; }
+.views { display:flex; flex-wrap:wrap; gap:6px; }
+.views button { font:500 13.5px var(--body); color:var(--fg); background:var(--surface); border:1.5px solid var(--line); border-radius:4px; padding:6px 12px; cursor:pointer; }
+.views button:hover { border-color:var(--muted); }
+.views button[aria-pressed="true"] { border-color:var(--idea); background:var(--ideafill); color:var(--fg); }
+.views button.today[aria-pressed="true"] { border-color:var(--azure); background:var(--modelfill); }
+#viewnote { font-size:14px; color:var(--fg); min-height:3.2em; max-width:110ch; border-left:3px solid var(--idea); padding:2px 0 2px 12px; }
+#viewnote.today { border-left-color:var(--azure); }
+
+/* svg styling */
+.box-rule { fill:var(--rulefill); stroke:var(--old); stroke-width:1.5; }
+.box-model { fill:var(--modelfill); stroke:var(--azure); stroke-width:2; }
+.box-weak { fill:var(--modelfill); stroke:var(--bad); stroke-width:2.5; }
+.box-io { fill:var(--surface); stroke:var(--fg); stroke-width:1.5; }
+.box-teach { fill:var(--teachfill); stroke:var(--teach); stroke-width:2; }
+.box-test { fill:var(--testfill); stroke:var(--warn); stroke-width:2; stroke-dasharray:2 4; stroke-linecap:round; }
+.box-idea { fill:var(--ideafill); stroke:var(--idea); stroke-width:2; stroke-dasharray:7 5; }
+.box-no { fill:var(--weakfill); stroke:var(--bad); stroke-width:1.5; stroke-dasharray:7 5; }
+.panel { fill:none; stroke:var(--teach); stroke-width:1; stroke-dasharray:3 4; opacity:.8; }
+.tag { font:600 10.5px var(--body); letter-spacing:.08em; fill:var(--muted); }
+.tag.model { fill:var(--azure); } .tag.teach { fill:var(--teach); } .tag.test { fill:var(--warn); } .tag.pur { fill:var(--idea); } .tag.weak, .tag.no { fill:var(--bad); }
+.ttl { font:600 15.5px var(--display); fill:var(--fg); }
+.txt { font:12.5px var(--body); fill:var(--fg); }
+.dim { font:12px var(--body); fill:var(--muted); }
+.big { font:600 28px var(--display); fill:var(--fg); font-variant-numeric:tabular-nums; }
+.big.model { fill:var(--azure); } .big.weak { fill:var(--bad); } .big.teach { fill:var(--teach); }
+.lbl { font:500 11.5px var(--body); fill:var(--muted); }
+.lbl.pur { fill:var(--idea); } .lbl.teach { fill:var(--teach); }
+.ar { font:16px "Noto Naskh Arabic","Amiri","Geeza Pro","Segoe UI",serif; fill:var(--fg); }
+.flow { stroke:var(--fg); stroke-width:1.8; fill:none; }
+.flow-teach { stroke:var(--teach); stroke-width:1.8; fill:none; }
+.flow-idea { stroke:var(--idea); stroke-width:1.8; fill:none; stroke-dasharray:6 4; }
+.flow-no { stroke:var(--bad); stroke-width:1.8; fill:none; stroke-dasharray:4 4; }
+.mk-fg { fill:var(--fg); } .mk-teach { fill:var(--teach); } .mk-idea { fill:var(--idea); }
+.chip-weak { fill:var(--bad); } .chip-weak-t { font:600 10px var(--body); letter-spacing:.07em; fill:var(--surface); }
+.glyph { fill:none; stroke:var(--muted); stroke-width:1.2; }
+.glyph-fill { fill:var(--muted); opacity:.5; }
+.mini-b { fill:var(--surface); stroke:var(--line); }
+
+/* view states */
+#pipe .idea { display:none; }
+#pipe[data-view="A"] .iA, #pipe[data-view="B"] .iB, #pipe[data-view="C"] .iC, #pipe[data-view="D"] .iD,
+#pipe[data-view="all"] .idea { display:inline; }
+#pipe:not([data-view="today"]) .iX { display:inline; }
+#pipe .replaced { transition:opacity .2s; }
+#pipe[data-view="A"] .replaced { opacity:.28; }
+.sizes .sq-big { fill:var(--ideafill); stroke:var(--idea); stroke-width:1.5; stroke-dasharray:7 5; }
+.sizes .sq-m { fill:var(--azure); }
+.sizes .sq-sum { fill:var(--azure); }
+.speed .seg1 { fill:var(--azure); } .speed .seg2 { fill:var(--azure); opacity:.6; } .speed .seg3 { fill:var(--old); }
+.speed .gpu { fill:var(--good); } .speed .est { fill:var(--ideafill); stroke:var(--idea); stroke-width:1.5; stroke-dasharray:6 4; }
+.axis { stroke:var(--line); stroke-width:1; }
+</style>
+</head>
+<body>
+<main>
+<header style="display:flex;flex-direction:column;gap:12px">
+  <h1>How the parser's models fit together</h1>
+  <p class="lede">A scanned page goes in and a typed, ordered document comes out, with no outside service. Three small trained models do the work, with rules between them. The structure model is the weak part, and it is taught by other models rather than by people. The purple dashed boxes are places a vision-language model such as Qwen could be added. None of them is built yet.</p>
+</header>
+
+<section>
+  <div class="bar">
+    <div class="legend" aria-label="Legend">
+      <span><i class="sw rule"></i>rules, no training</span>
+      <span><i class="sw model"></i>trained model, working today</span>
+      <span><i class="sw teach"></i>teaching loop</span>
+      <span><i class="sw test"></i>being tested now</span>
+      <span><i class="sw idea"></i>idea, not built</span>
+    </div>
+    <div class="views" role="group" aria-label="Show the pipeline">
+      <button data-v="today" class="today">Today</button>
+      <button data-v="A">Qwen as A: structure</button>
+      <button data-v="B">B: teacher</button>
+      <button data-v="C">C: first look</button>
+      <button data-v="D">D: tables</button>
+      <button data-v="all">All ideas</button>
+    </div>
+  </div>
+  <p id="viewnote"></p>
+
+  <figure>
+<svg id="pipe" data-view="today" viewBox="0 0 1300 1040" role="img" aria-label="The parsing pipeline from scanned page to parsed document: page cleaning (rules), line finder (1.1M-weight model), ink map and layout (rules), line reader (8.4M-weight model), structure model (4.85M weights, the weak part), output. A teaching loop on the right feeds the structure model: earlier Gemini labels, Claude Haiku as the bulk labeller, and three judge models that score it. Dashed boxes on the left and right show where a Qwen vision-language model could attach.">
+<defs>
+  <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-fg"/></marker>
+  <marker id="ah-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-teach"/></marker>
+  <marker id="ah-i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-idea"/></marker>
+</defs>
+
+<!-- column headings -->
+<text x="20" y="12" class="lbl pur idea iX">WHERE QWEN COULD ATTACH</text>
+
+<!-- ============ MAIN PIPELINE (x 280..764) ============ -->
+<!-- 0 input -->
+<g>
+  <rect x="280" y="20" width="484" height="60" rx="6" class="box-io"/>
+  <text x="296" y="45" class="ttl">Scanned PDF page</text>
+  <text x="296" y="66" class="dim">drawn as a picture at 300 dots per inch</text>
+  <rect x="716" y="28" width="32" height="44" rx="2" class="glyph"/>
+  <line x1="722" y1="37" x2="742" y2="37" class="glyph"/><line x1="722" y1="44" x2="742" y2="44" class="glyph"/>
+  <line x1="722" y1="51" x2="742" y2="51" class="glyph"/><line x1="728" y1="58" x2="742" y2="58" class="glyph"/>
+</g>
+<line x1="522" y1="80" x2="522" y2="106" class="flow" marker-end="url(#ah)"/>
+
+<!-- 1 cleaning -->
+<g>
+  <rect x="280" y="108" width="484" height="106" rx="6" class="box-rule"/>
+  <text x="296" y="128" class="tag">RULES · NO TRAINING</text>
+  <text x="296" y="148" class="ttl">1  Page cleaning</text>
+  <text x="296" y="167" class="txt">evens out the paper; removes scanner borders</text>
+  <text x="296" y="183" class="txt">finds photographs by their grey tones and paints them out</text>
+  <text x="296" y="199" class="txt">removes ruled lines (a rule standing alone is kept as a separator)</text>
+</g>
+<line x1="522" y1="214" x2="522" y2="240" class="flow" marker-end="url(#ah)"/>
+<text x="530" y="232" class="lbl">clean page</text>
+
+<!-- 2 line finder -->
+<g>
+  <rect x="280" y="242" width="484" height="122" rx="6" class="box-model"/>
+  <text x="296" y="262" class="tag model">TRAINED MODEL · 1.1 MILLION WEIGHTS</text>
+  <text x="296" y="282" class="ttl">2  Line finder</text>
+  <text x="296" y="301" class="txt">small U-Net; sees the page shrunk to 1,024 px</text>
+  <text x="296" y="317" class="txt">wide and marks where each line of text runs</text>
+  <text x="296" y="333" class="dim">taught from Azure's line boxes: 350 docs,</text>
+  <text x="296" y="349" class="dim">3,525 pages, 152,639 lines</text>
+  <text x="748" y="292" text-anchor="end" class="big model">95.2%</text>
+  <text x="748" y="310" text-anchor="end" class="dim">of lines matched 1-to-1,</text>
+  <text x="748" y="325" text-anchor="end" class="dim">50 unseen docs</text>
+  <text x="748" y="345" text-anchor="end" class="dim">98.2% on its own test</text>
+</g>
+<line x1="522" y1="364" x2="522" y2="390" class="flow" marker-end="url(#ah)"/>
+<text x="530" y="382" class="lbl">line positions</text>
+
+<!-- 3 ink map -->
+<g>
+  <rect x="280" y="392" width="484" height="106" rx="6" class="box-rule"/>
+  <text x="296" y="412" class="tag">RULES · NO TRAINING</text>
+  <text x="296" y="432" class="ttl">3  Ink map and layout</text>
+  <text x="296" y="451" class="txt">finds every connected blob of ink</text>
+  <text x="296" y="467" class="txt">attaches letters and their dots to the found lines</text>
+  <text x="296" y="483" class="txt">finds columns from white space; reads them right to left</text>
+  <!-- glyph: two columns, read right to left -->
+  <rect x="694" y="420" width="24" height="56" rx="2" class="glyph"/>
+  <rect x="724" y="420" width="24" height="56" rx="2" class="glyph"/>
+  <text x="736" y="452" text-anchor="middle" class="lbl">1</text>
+  <text x="706" y="452" text-anchor="middle" class="lbl">2</text>
+  <path d="M744,488 H700" class="flow" marker-end="url(#ah)" style="stroke-width:1.3"/>
+</g>
+<line x1="522" y1="498" x2="522" y2="524" class="flow" marker-end="url(#ah)"/>
+<text x="530" y="516" class="lbl">one image per line, in reading order</text>
+
+<!-- 4 reader -->
+<g>
+  <rect x="280" y="526" width="484" height="138" rx="6" class="box-model"/>
+  <text x="296" y="546" class="tag model">TRAINED MODEL · 8.4 MILLION WEIGHTS</text>
+  <text x="296" y="566" class="ttl">4  Line reader</text>
+  <text x="296" y="585" class="txt">reads a whole line image, 48 px high, into text</text>
+  <text x="296" y="601" class="dim">convolutions + two-layer LSTM + CTC</text>
+  <text x="296" y="617" class="dim">owner's copy: trained on 2.74M lines</text>
+  <text x="296" y="633" class="dim">copy trained here: 1.17M lines, 50 min → 1.86%</text>
+  <text x="296" y="649" class="txt">then a small rule puts Latin words and numbers back in order</text>
+  <text x="748" y="576" text-anchor="end" class="big model">1.37%</text>
+  <text x="748" y="594" text-anchor="end" class="dim">characters wrong</text>
+  <text x="748" y="609" text-anchor="end" class="dim">770 lines, settled reading</text>
+  <text x="748" y="627" text-anchor="end" class="dim">Azure: 1.85%</text>
+</g>
+<line x1="522" y1="664" x2="522" y2="690" class="flow" marker-end="url(#ah)"/>
+<text x="530" y="682" class="lbl">lines: box + text</text>
+
+<!-- 5 structure -->
+<g class="replaced">
+  <rect x="280" y="692" width="484" height="200" rx="6" class="box-weak"/>
+  <text x="296" y="712" class="tag model">TRAINED MODEL · 4.85 MILLION WEIGHTS</text>
+  <rect x="560" y="701" width="188" height="16" rx="3" class="chip-weak"/>
+  <text x="654" y="713" text-anchor="middle" class="chip-weak-t">WEAK PART · CURRENT FOCUS</text>
+  <text x="296" y="732" class="ttl">5  Structure model</text>
+  <text x="296" y="751" class="txt">a transformer over all the lines of a page at once</text>
+  <text x="296" y="767" class="dim">each line arrives as its box (26 numbers)</text>
+  <text x="296" y="783" class="dim">+ its first 24 and last 10 characters</text>
+  <text x="296" y="799" class="txt">says what each line is (27 types: paragraph,</text>
+  <text x="296" y="815" class="txt">heading, list item, table, footnote, running</text>
+  <text x="296" y="831" class="txt">head, ...), where each block begins; + list rule</text>
+  <text x="748" y="756" text-anchor="end" class="big weak">92.0%</text>
+  <text x="748" y="773" text-anchor="end" class="dim">line types right,</text>
+  <text x="748" y="787" text-anchor="end" class="dim">judged pages</text>
+  <text x="748" y="805" text-anchor="end" class="txt" style="font-weight:600">94.9% after</text>
+  <text x="748" y="819" text-anchor="end" class="dim">Haiku retrain (3,294 pp.)</text>
+  <!-- tested: the eye -->
+  <rect x="292" y="842" width="460" height="40" rx="4" class="box-test"/>
+  <text x="302" y="858" class="tag test">BEING TESTED</text>
+  <text x="392" y="858" class="txt">an "eye": a small picture of every line as extra input</text>
+  <text x="302" y="874" class="dim">94.0% vs 93.7% without it, same run: no real gain yet. Bigger runs: pending</text>
+</g>
+<line x1="522" y1="892" x2="522" y2="918" class="flow" marker-end="url(#ah)"/>
+<text x="530" y="910" class="lbl">typed lines, block starts</text>
+
+<!-- 6 output -->
+<g>
+  <rect x="280" y="920" width="484" height="100" rx="6" class="box-io"/>
+  <text x="296" y="945" class="ttl">Parsed document + viewer</text>
+  <text x="296" y="966" class="txt">blocks with a type, in reading order,</text>
+  <text x="296" y="982" class="txt">each tied to its place on the scan</text>
+  <rect x="584" y="930" width="164" height="24" rx="3" class="mini-b"/>
+  <text x="590" y="946" class="lbl">heading</text><text x="742" y="947" text-anchor="end" class="ar" style="font-weight:600">الفصل الأول</text>
+  <rect x="584" y="958" width="164" height="24" rx="3" class="mini-b"/>
+  <text x="590" y="974" class="lbl">paragraph</text><text x="742" y="975" text-anchor="end" class="ar">كان الكتاب في</text>
+  <rect x="584" y="986" width="164" height="24" rx="3" class="mini-b"/>
+  <text x="590" y="1002" class="lbl">footnote</text><text x="742" y="1003" text-anchor="end" class="ar" style="font-size:13px">١ انظر المصدر</text>
+</g>
+
+<!-- ============ TEACHING LOOP (right) ============ -->
+<rect x="820" y="548" width="466" height="428" rx="8" class="panel"/>
+<text x="836" y="570" class="tag teach">HOW THE STRUCTURE MODEL IS TAUGHT · NO PERSON LABELS ANYTHING</text>
+
+<g>
+  <rect x="850" y="584" width="425" height="56" rx="6" class="box-teach"/>
+  <text x="864" y="606" class="txt" style="font-weight:600">First training set: 30,220 pages labelled by Gemini</text>
+  <text x="864" y="626" class="dim">in the owner's earlier project</text>
+</g>
+<path d="M850,612 H790 V712 H766" class="flow-teach" marker-end="url(#ah-t)"/>
+
+<g class="replaced-B">
+  <rect x="850" y="670" width="190" height="102" rx="6" class="box-teach"/>
+  <text x="864" y="690" class="tag teach">BULK LABELLER</text>
+  <text x="864" y="710" class="ttl">Claude Haiku</text>
+  <text x="864" y="728" class="txt">98.2% against the judges</text>
+  <text x="864" y="744" class="txt">71¢ per 1,000 pages (batch)</text>
+  <text x="864" y="760" class="txt">3,928 pages for $3</text>
+</g>
+<line x1="850" y1="740" x2="766" y2="740" class="flow-teach" marker-end="url(#ah-t)"/>
+<text x="808" y="756" text-anchor="middle" class="lbl teach">labels:</text>
+<text x="808" y="770" text-anchor="middle" class="lbl teach">retrain</text>
+
+<g>
+  <rect x="850" y="806" width="190" height="154" rx="6" class="box-teach"/>
+  <text x="864" y="826" class="tag teach">THE JUDGES · REFERENCE</text>
+  <text x="864" y="846" class="ttl">Three judges</text>
+  <text x="864" y="864" class="txt" style="font-size:12px">Claude Opus, Claude Sonnet,</text>
+  <text x="864" y="880" class="txt">Gemini 4 Argon</text>
+  <text x="864" y="898" class="dim">70 dev pages, 3,085 lines,</text>
+  <text x="864" y="914" class="dim">14 kinds of page</text>
+  <text x="864" y="932" class="txt">all three agree: 97.8%</text>
+  <text x="864" y="948" class="dim">2-of-3 choice = reference</text>
+</g>
+<path d="M850,868 H766" class="flow-teach" marker-end="url(#ah-t)"/>
+<text x="808" y="884" text-anchor="middle" class="lbl teach">scores it</text>
+<line x1="945" y1="806" x2="945" y2="774" class="flow-teach" marker-end="url(#ah-t)"/>
+<text x="953" y="794" class="lbl teach">checks it</text>
+
+<!-- tested: Qwen on same 70 pages -->
+<g>
+  <rect x="1085" y="806" width="190" height="154" rx="6" class="box-test"/>
+  <text x="1099" y="826" class="tag test">BEING TESTED</text>
+  <text x="1099" y="846" class="ttl" style="font-size:14px">Qwen VLM, no training</text>
+  <text x="1099" y="865" class="txt">open weights, rented GPU</text>
+  <text x="1099" y="881" class="txt">same 70 pages,</text>
+  <text x="1099" y="897" class="txt">same instructions</text>
+  <text x="1099" y="917" class="dim">scored against the judges</text>
+  <text x="1099" y="940" class="txt" style="font-weight:600">result: pending</text>
+</g>
+<line x1="1040" y1="874" x2="1083" y2="874" class="flow-teach" marker-end="url(#ah-t)"/>
+
+<!-- ============ IDEAS ============ -->
+<!-- C: first look -->
+<g class="idea iC">
+  <rect x="20" y="20" width="230" height="150" rx="6" class="box-idea"/>
+  <text x="34" y="40" class="tag pur">IDEA C · FIRST LOOK</text>
+  <text x="34" y="60" class="ttl">Qwen as consultant</text>
+  <text x="34" y="79" class="txt">looks at each document first:</text>
+  <text x="34" y="95" class="txt">what kind of document is it,</text>
+  <text x="34" y="111" class="txt">and which route should it take?</text>
+  <text x="34" y="131" class="dim">(the "consultant first" idea;</text>
+  <text x="34" y="147" class="dim">once per document, not per page)</text>
+  <path d="M280,50 H252" class="flow-idea" marker-end="url(#ah-i)"/>
+  <path d="M250,150 H278" class="flow-idea" marker-end="url(#ah-i)"/>
+</g>
+
+<!-- D: tables -->
+<g class="idea iD">
+  <rect x="20" y="392" width="230" height="106" rx="6" class="box-idea"/>
+  <text x="34" y="412" class="tag pur">IDEA D · TABLES</text>
+  <text x="34" y="432" class="ttl">Qwen reads tables</text>
+  <text x="34" y="451" class="txt">as rows and cells, where today</text>
+  <text x="34" y="467" class="txt">they come out cell by cell,</text>
+  <text x="34" y="483" class="txt">column by column</text>
+  <path d="M278,445 H252" class="flow-idea" marker-end="url(#ah-i)"/>
+</g>
+
+<!-- NOT the reader -->
+<g class="idea iX">
+  <rect x="20" y="526" width="230" height="100" rx="6" class="box-no"/>
+  <text x="34" y="546" class="tag no">NOT AS THE READER</text>
+  <text x="34" y="565" class="txt">earlier Qwen-based reader:</text>
+  <text x="34" y="581" class="txt" style="font-weight:600">3.0% characters wrong</text>
+  <text x="34" y="597" class="dim">Azure 2.0%, small reader 1.4%;</text>
+  <text x="34" y="613" class="dim">and LLMs tidy what they read</text>
+  <path d="M250,576 H280" class="flow-no"/>
+  <path d="M259,570 l12,12 M271,570 l-12,12" stroke="var(--bad)" stroke-width="2.4"/>
+</g>
+
+<!-- A: structure -->
+<g class="idea iA">
+  <rect x="20" y="692" width="230" height="200" rx="6" class="box-idea"/>
+  <text x="34" y="712" class="tag pur">IDEA A · STRUCTURE STEP</text>
+  <text x="34" y="732" class="ttl">Qwen in place of box 5</text>
+  <text x="34" y="751" class="txt">sees the whole page picture,</text>
+  <text x="34" y="767" class="txt">not 26 numbers and 34</text>
+  <text x="34" y="783" class="txt">characters per line</text>
+  <text x="34" y="807" class="txt" style="font-weight:600">about 1 to 3 s a page</text>
+  <text x="34" y="823" class="dim">an estimate, not measured;</text>
+  <text x="34" y="839" class="dim">the whole pipeline today takes</text>
+  <text x="34" y="855" class="dim">0.6 s a page on an RTX 5090</text>
+  <text x="34" y="878" class="dim">billions of weights (see below)</text>
+  <path d="M280,648 H135 V690" class="flow-idea" marker-end="url(#ah-i)"/>
+  <text x="143" y="672" class="lbl pur">page picture + lines</text>
+  <path d="M135,892 V970 H278" class="flow-idea" marker-end="url(#ah-i)"/>
+  <text x="143" y="960" class="lbl pur">typed blocks, in order</text>
+</g>
+
+<!-- B: teacher -->
+<g class="idea iB">
+  <rect x="1085" y="670" width="190" height="102" rx="6" class="box-idea"/>
+  <text x="1099" y="690" class="tag pur">IDEA B · TEACHER</text>
+  <text x="1099" y="710" class="ttl">Qwen labels pages</text>
+  <text x="1099" y="728" class="txt">in place of or beside Haiku</text>
+  <text x="1099" y="744" class="txt">weights the owner controls</text>
+  <text x="1099" y="760" class="txt">no charge per page</text>
+  <path d="M1180,670 V652 H810 V738" class="flow-idea"/>
+  <line x1="1180" y1="806" x2="1180" y2="775" class="flow-idea" marker-end="url(#ah-i)"/>
+  <text x="1172" y="794" text-anchor="end" class="lbl pur">if it holds up</text>
+</g>
+</svg>
+    <figcaption>Black arrows are what one page passes through, top to bottom. Green arrows are teaching: labels go into the structure model to train it, and the judges score it. Pick a Qwen placement above to see where it would attach. In view A the structure model fades because Qwen would replace it. The teaching loop would then only be needed to score Qwen.</figcaption>
+  </figure>
+
+  <div class="tiles">
+    <div class="tile"><div class="who">Whole pipeline, text vs Azure</div><div class="big">4.35%</div><div class="sub">characters differ, 50 unseen documents (4.00% on 100 more)</div></div>
+    <div class="tile"><div class="who">Speed on an RTX 5090</div><div class="big">0.6 s</div><div class="sub">a page, about</div></div>
+    <div class="tile"><div class="who">Speed on the owner's laptop</div><div class="big">6 s</div><div class="sub">a page, about. Line finder 3.0 s, reader 2.2 s</div></div>
+    <div class="tile"><div class="who">Outside services</div><div class="big">none</div><div class="sub">at parse time. Outside models are used only to teach and to judge</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>How big the models are, drawn to the same scale</h2>
+  <figure>
+<svg class="sizes" viewBox="0 0 1000 340" role="img" aria-label="Squares whose area is proportional to the number of weights: the three trained models together (14.35 million) are a small corner of a one-billion-weight square, and a vision-language model has several billion.">
+  <rect x="30" y="20" width="300" height="300" class="sq-big"/>
+  <text x="180" y="168" text-anchor="middle" class="ttl" style="fill:var(--idea)">1 billion weights</text>
+  <text x="180" y="188" text-anchor="middle" class="dim">a vision-language model such as</text>
+  <text x="180" y="204" text-anchor="middle" class="dim">Qwen has several billion:</text>
+  <text x="180" y="220" text-anchor="middle" class="dim">several squares this size</text>
+  <!-- all three together in the corner: 14.35M -> side 37.9 -->
+  <rect x="30" y="282.1" width="37.9" height="37.9" class="sq-sum"/>
+  <path d="M68,300 H150" class="flow" marker-start="url(#ahs)" style="stroke-width:1"/>
+  <text x="154" y="304" class="lbl">all three of ours together</text>
+  <defs><marker id="ahs" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-fg"/></marker></defs>
+
+  <!-- each at true scale: 1B = 300x300 = 90000 px^2 -->
+  <g transform="translate(420,40)">
+    <rect x="0" y="0" width="27.5" height="27.5" class="sq-m"/>
+    <text x="48" y="12" class="txt" style="font-weight:600">Line reader · 8.4 million</text>
+    <text x="48" y="28" class="dim">reads text; the largest of the three</text>
+    <rect x="3.3" y="70" width="20.9" height="20.9" class="sq-m"/>
+    <text x="48" y="78" class="txt" style="font-weight:600">Structure model · 4.85 million</text>
+    <text x="48" y="94" class="dim">types and blocks</text>
+    <rect x="8.8" y="134" width="9.9" height="9.9" class="sq-m"/>
+    <text x="48" y="138" class="txt" style="font-weight:600">Line finder · 1.1 million</text>
+    <text x="48" y="154" class="dim">finds the lines</text>
+    <line x1="0" y1="190" x2="520" y2="190" class="axis"/>
+    <text x="0" y="216" class="txt">Area is proportional to weights. One billion weights is about 70 times all three of ours together.</text>
+    <text x="0" y="238" class="dim">Size is not quality: the 8.4-million reader makes fewer errors (1.4%)</text>
+    <text x="0" y="254" class="dim">than the earlier Qwen-based reader (3.0%).</text>
+    <text x="0" y="276" class="dim">A big model costs time and a GPU on every page, which adds up over 30 million pages.</text>
+  </g>
+</svg>
+    <figcaption>Squares at the same scale, so the area shows the number of weights. A Qwen model's exact size is not fixed here because it depends on which version is chosen. Every version has billions of weights.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Where the time goes</h2>
+  <figure>
+<svg class="speed" viewBox="0 0 1000 210" role="img" aria-label="Seconds per page: about 6 on the laptop, of which line finder 3.0 and reader 2.2; about 0.6 for the whole pipeline on an RTX 5090; Qwen as the structure step alone estimated at 1 to 3 seconds, not measured.">
+  <!-- scale: 0..6 s over x 260..860 => 100 px per second -->
+  <line x1="260" y1="20" x2="260" y2="170" class="axis"/>
+  <text x="250" y="44" text-anchor="end" class="txt">Laptop, whole pipeline</text>
+  <rect x="260" y="28" width="300" height="24" class="seg1"/><text x="410" y="45" text-anchor="middle" class="txt" style="fill:var(--surface);font-weight:600">line finder 3.0 s</text>
+  <rect x="560" y="28" width="220" height="24" class="seg2"/><text x="670" y="45" text-anchor="middle" class="txt" style="fill:var(--surface);font-weight:600">reader 2.2 s</text>
+  <rect x="780" y="28" width="80" height="24" class="seg3"/>
+  <text x="868" y="45" class="dim">rest · about 6 s total</text>
+
+  <text x="250" y="94" text-anchor="end" class="txt">RTX 5090, whole pipeline</text>
+  <rect x="260" y="78" width="60" height="24" class="gpu"/>
+  <text x="328" y="95" class="dim">about 0.6 s</text>
+
+  <text x="250" y="144" text-anchor="end" class="txt" style="fill:var(--idea)">Idea A, Qwen structure step</text>
+  <rect x="360" y="128" width="200" height="24" class="est"/>
+  <text x="460" y="145" text-anchor="middle" class="lbl pur">1 to 3 s, estimate</text>
+  <text x="568" y="145" class="dim">not measured; for that one step alone</text>
+
+  <g class="dim"><text x="260" y="190" text-anchor="middle">0</text><text x="360" y="190" text-anchor="middle">1 s</text><text x="460" y="190" text-anchor="middle">2 s</text><text x="560" y="190" text-anchor="middle">3 s</text><text x="660" y="190" text-anchor="middle">4 s</text><text x="760" y="190" text-anchor="middle">5 s</text><text x="860" y="190" text-anchor="middle">6 s</text></g>
+</svg>
+    <figcaption>Seconds per page. On the laptop the two trained image models take most of the time. On its own, idea A would take longer than the whole pipeline does today on the GPU.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Known gaps today</h2>
+  <ul>
+    <li>Tables are read column by column, not as rows and cells. Idea D aims here.</li>
+    <li>English pages are put in order as if they were Arabic (columns right to left).</li>
+    <li>Vowelled text, handwriting and filled forms are not handled. Idea C would at least send such documents down another route.</li>
+  </ul>
+  <p class="note">Pending, not measured yet: the longer and bigger runs of the structure model with an eye, and Qwen with no training on the 70 judged pages. Idea A's speed of 1 to 3 seconds a page is an estimate.</p>
+</section>
+</main>
+
+<script>
+(function () {
+  var notes = {
+    today: "Today: three small trained models (blue) with rules between them (grey). The structure model is the weak part, and the green loop on the right is how it gets taught without people. Two things are being tested (amber): giving it an eye, and Qwen on the 70 judged pages.",
+    A: "A. Qwen replaces the structure model. It gets the page picture and the lines found and read by steps 2 to 4, and gives back typed blocks in order. It would see the whole page, not 26 numbers and a few characters per line, but it would be slower, roughly 1 to 3 s a page (estimate). The judges would still be needed to score it.",
+    B: "B. Qwen becomes the teacher, in place of or beside Haiku. The small structure model stays in the pipeline. Its labels come from open weights the owner controls, with no charge per page. The test running now, on the same 70 pages, decides whether it holds up.",
+    C: "C. Qwen takes a first look at each document before anything else: what kind of document it is, and which route it should take. Documents the pipeline cannot handle yet (forms, handwriting) would be sent another way instead of failing silently.",
+    D: "D. Qwen reads table regions as rows and cells. Today the pipeline reads them cell by cell, column by column. The layout step would hand table areas to it.",
+    all: "All four placements at once. The red box marks where not to put it: as the line reader, the small model already makes fewer errors than a Qwen-based reader did."
+  };
+  var svg = document.getElementById("pipe");
+  var note = document.getElementById("viewnote");
+  var buttons = document.querySelectorAll(".views button");
+  function show(v) {
+    if (!notes[v]) v = "today";
+    svg.setAttribute("data-view", v);
+    note.textContent = notes[v];
+    note.className = v === "today" ? "today" : "";
+    for (var i = 0; i < buttons.length; i++) buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-v") === v ? "true" : "false");
+  }
+  for (var i = 0; i < buttons.length; i++) buttons[i].addEventListener("click", function () { var v = this.getAttribute("data-v"); history.replaceState(null, "", "#" + v); show(v); });
+  window.addEventListener("hashchange", function () { show(location.hash.slice(1)); });
+  show(location.hash.slice(1));
+})();
+</script>
+</body>
+</html>

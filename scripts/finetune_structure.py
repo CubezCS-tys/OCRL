@@ -31,6 +31,7 @@ ap.add_argument("--visual", action="store_true", help="give the model a small pi
 ap.add_argument("--d", type=int, default=0, help="width of a bigger model trained from nothing (0: keep the base model's size and weights)")
 ap.add_argument("--layers", type=int, default=0); ap.add_argument("--limit", type=int, default=0, help="load only this many labelled pages (to try the script)")
 a = ap.parse_args()
+cv2.setNumThreads(2)  # on a machine with hundreds of cores OpenCV's own threads make every small call crawl
 torch.set_num_threads(a.threads); torch.manual_seed(0); rng = np.random.default_rng(0)
 dev_ = "cuda" if torch.cuda.is_available() else "cpu"
 L = Path("out/labeller"); TI = {t: i for i, t in enumerate(TYPES)}
@@ -111,16 +112,22 @@ def score(model, pages, labels, rule: bool):
     return ok / max(n, 1), miss, per
 
 
-test = judged()
+cache = L / f"cache_{Path(a.labels).name}_{int(a.ink)}{int(a.visual)}_{a.limit}.pt"  # reading 4,000 pages takes minutes; do it once
+if cache.exists():
+    test, data = torch.load(cache, weights_only=False)
+else:
+    test, data = judged(), None
 acc, miss, _ = score(base, test, base.labels, False); acc_r, miss_r, _ = score(base, test, base.labels, True)
 print(f"before, on the 70 judged pages: {100 * acc:.1f}% of line types right; with the list rule {100 * acc_r:.1f}% ({sum(len(p['ids']) for p in test)} lines)", flush=True)
 if a.only_score: raise SystemExit
-folders = sorted(p for p in Path(a.inputs).iterdir() if (Path(a.labels) / f"{p.name}.json").exists())
-if a.limit: folders = folders[: a.limit]
-data = []
-for f in folders:
-    try: data.append((f.name.rsplit("_p", 1)[0], page(f, json.load(open(Path(a.labels) / f"{f.name}.json", encoding="utf-8")))))
-    except Exception: pass
+if data is None:
+    folders = sorted(p for p in Path(a.inputs).iterdir() if (Path(a.labels) / f"{p.name}.json").exists())
+    if a.limit: folders = folders[: a.limit]
+    data = []
+    for f in folders:
+        try: data.append((f.name.rsplit("_p", 1)[0], page(f, json.load(open(Path(a.labels) / f"{f.name}.json", encoding="utf-8")))))
+        except Exception: pass
+    torch.save((test, data), cache)
 docs = sorted({d for d, _ in data}); held = set(rng.choice(docs, max(len(docs) // 12, 1), replace=False))
 keep_docs = set(rng.permutation([d for d in docs if d not in held])[: max(int(a.fraction * (len(docs) - len(held))), 1)])
 train = [p for d, p in data if d in keep_docs]; dev = [p for d, p in data if d in held]

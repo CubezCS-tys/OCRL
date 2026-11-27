@@ -18,6 +18,10 @@ class Cleaned:
     pictures: list[tuple[int, int, int, int]] = field(default_factory=list)  # x0, y0, x1, y1
     rules: list[tuple[int, int, int, int]] = field(default_factory=list)  # ruled lines across the page that were painted out
     notes: list[str] = field(default_factory=list)
+    # The rules that were not reported above because they belong to a table or a box: the across rules
+    # that meet uprights, and the uprights themselves (often one piece per row). Painted out all the same.
+    grid: list[tuple[int, int, int, int]] = field(default_factory=list)
+    uprights: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
 def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
@@ -83,6 +87,7 @@ def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
     rules = np.zeros((H, W), np.uint8)
     across_boxes: list[tuple[int, int, int, int]] = []
     upright = np.zeros((H, W), np.uint8)
+    upright_boxes: list[tuple[int, int, int, int]] = []
     for kernel, across in ((np.ones((1, int(7 * tall)), np.uint8), True), (np.ones((int(1.8 * tall), 1), np.uint8), False)):
         runs = cv2.morphologyEx(ink, cv2.MORPH_OPEN, kernel)
         r, rlab, rstats, _ = cv2.connectedComponentsWithStats(runs, connectivity=8)
@@ -94,10 +99,12 @@ def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
         if across:
             across_boxes = [(int(x), int(y), int(x + w), int(y + h)) for x, y, w, h, _ in rstats[thin]]
         else:
+            upright_boxes = [(int(x), int(y), int(x + w), int(y + h)) for x, y, w, h, _ in rstats[thin]]
             upright = cv2.dilate(thin[rlab].astype(np.uint8), np.ones((int(tall) | 1, int(tall) | 1), np.uint8))
     # A rule standing on its own separates two parts of the page, and the region finder cuts there. A rule
     # that meets uprights is one side of a table or a box, and says nothing about the page's parts.
     across_rules = [bx for bx in across_boxes if not upright[bx[1] : bx[3] + 1, bx[0] : bx[2] + 1].any()]
+    grid = [bx for bx in across_boxes if upright[bx[1] : bx[3] + 1, bx[0] : bx[2] + 1].any()]
     if rules.any():
         rules = cv2.dilate(rules, np.ones((5, 5), np.uint8))
         notes.append("ruled-lines")
@@ -107,4 +114,4 @@ def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
     out[pic_mask > 0] = 255
     if drop_rules:
         out[rules > 0] = 255
-    return Cleaned(out, pictures, across_rules if drop_rules else [], notes)
+    return Cleaned(out, pictures, across_rules if drop_rules else [], notes, grid, upright_boxes)

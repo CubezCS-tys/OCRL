@@ -30,6 +30,7 @@ for bi, b in enumerate(ours["blocks"]):
             mine.setdefault(part["page"], []).append((box, bi, n)); n += 1
 pages = {p["number"] for p in ours["pages"]}
 given: dict[int, list] = {}
+at_box: dict[tuple, list] = {}  # (page, our line box) -> the Azure lines given to that line
 c = Counter()
 for pg in az["pages"]:
     p = pg["pageNumber"]
@@ -48,6 +49,7 @@ for pg in az["pages"]:
         over = {m[1] for m in mine.get(p, []) if min(m[0][2], x1) - max(m[0][0], x0) > 0.3 * (x1 - x0) and min(m[0][3], y1) - max(m[0][1], y0) > 0.5 * (y1 - y0)}
         c["straddles_two_blocks"] += len(over) > 1
         given.setdefault(hit[1], []).append((hit[2], -cx, p, f"{p}:{i}"))
+        at_box.setdefault((p, tuple(hit[0])), []).append(f"{p}:{i}")
 
 blocks = []
 for bi, b in enumerate(ours["blocks"]):
@@ -65,7 +67,24 @@ for bi, b in enumerate(ours["blocks"]):
         nb["aside"] = True
     elif "order" in b:
         nb["order"] = b["order"]
-    if b["type"] == "table":  # we label a table but do not parse its cells: every line is given to the table as a whole
+    if b["type"] == "table" and "table" in b:  # our cells, with the Azure lines that fell on each cell's lines
+        t = b["table"]
+
+        def cell(c):
+            if not isinstance(c, dict):
+                return None  # a place covered by a spanning cell: the scorer reads the span from the cell itself
+            out = {"text": c["text"], "lines": [r for box in c["lines"] for r in at_box.get((c["page"], tuple(box)), [])]}
+            if c.get("rowspan"):
+                out["rowspan"] = c["rowspan"]
+            return out if out["lines"] else None
+
+        rep_pages = [q["page"] for q in b["parts"]]
+        rep = [r for box in t.get("repeated_header_lines", []) for pg in rep_pages[1:] for r in at_box.get((pg, tuple(box)), [])]
+        nb["table"] = {"header": [cell(c) for c in t["header"]], "rows": [{"cells": [cell(c) for c in r]} for r in t["rows"]],
+                       "repeated_header_lines": rep}
+        for p in parts:
+            p["lines"] = []
+    elif b["type"] == "table":  # a table block without a grid: every line is given to the table as a whole
         nb["table"] = {"header": [], "rows": [], "repeated_header_lines": [r for p in parts for r in p["lines"]]}
         for p in parts:
             p["lines"] = []
@@ -90,4 +109,7 @@ for what, a, b in r["rows"]:
 if not args.quiet:
     kinds = Counter(d[0] for d in r["diffs"])
     print("   differences by kind:", dict(kinds))
+    for d in r["diffs"]:
+        if d[0] == "table":
+            print("     ", str(d)[:300])
 json.dump({"rows": r["rows"], "ruler": dict(c)}, open(args.ours.replace(".json", ".compare.json"), "w"), ensure_ascii=False)
