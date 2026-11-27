@@ -83,6 +83,7 @@ if __name__ == "__main__":
     ap.add_argument("--probe", type=int, default=0, help="only time this many training steps, save nothing")
     ap.add_argument("--init-adapter", default="", help="continue training this adapter instead of starting a new one")
     ap.add_argument("--exclude", default="", help="a split.json from an earlier run: leave out the training pages it used")
+    ap.add_argument("--shuffle-seed", type=int, default=0, help="reorder the training pages with this seed (0: the split's order)")
     ap.add_argument("--warmup", type=int, default=20); ap.add_argument("--save-every", type=int, default=0, help="also save the adapter every this many steps")
     a = ap.parse_args()
     import torch, transformers
@@ -95,6 +96,7 @@ if __name__ == "__main__":
     if a.exclude:
         prev = json.load(open(ROOT / a.exclude)); assert prev["val"] == val, "validation pages differ from the earlier run"
         seen = set(prev["train"]); train = [p for p in train if p not in seen]
+    if a.shuffle_seed: random.Random(a.shuffle_seed).shuffle(train)
     train = train[: a.train_pages] if a.train_pages > 0 else train
     out.mkdir(parents=True, exist_ok=True)
     json.dump({"train": train, "val": val, "dropped": dropped}, open(out / "split.json", "w"), indent=0)

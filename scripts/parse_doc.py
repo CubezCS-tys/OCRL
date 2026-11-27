@@ -37,7 +37,8 @@ if args.typer:
     typer = Typer(args.typer)
 infos, blocks = parse(OCR(args.ckpt, linefinder=args.lines or None, line_reader=args.line_reader or None), images, int(args.pages.split("-")[0]) if args.pages else 1, typer)
 how = f"OCRL structure model ({' + '.join(Path(t).stem for t in args.typer.split('+'))}) with the list rule, local. Not checked by a person." if typer else ""
-master = to_master(doc_id, infos, blocks, args.dpi, Path(args.ckpt).stem, how)
+reader = Path(args.line_reader).parent.name + " line reader" if args.line_reader else Path(args.ckpt).stem  # as the upload page names it
+master = to_master(doc_id, infos, blocks, args.dpi, reader, how)
 secs = time.time() - t
 (out / f"{doc_id}.local.master.json").write_text(json.dumps(master, ensure_ascii=False, indent=1), encoding="utf-8")
 write_viewer(master, images, out / f"{doc_id}.html", args.dpi, secs)

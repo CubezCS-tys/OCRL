@@ -5,6 +5,7 @@ two-to-one split the majority's type is used and the line is counted as "majorit
 measures agreement between independent strong models, which is the only check this project has.
 
     uv run python scripts/labeller_agreement.py --judges opus sonnet argon --others haiku flash
+    uv run python scripts/labeller_agreement.py --set check     # the untouched check pages: Haiku, Flash and Argon, no "ours"
 """
 import argparse, json
 from collections import Counter, defaultdict
@@ -12,16 +13,22 @@ from pathlib import Path
 
 L = Path("out/labeller")
 ap = argparse.ArgumentParser()
-ap.add_argument("--judges", nargs="+", default=["opus", "sonnet", "argon"]); ap.add_argument("--others", nargs="*", default=["haiku", "flash"])
+ap.add_argument("--judges", nargs="+", default=None); ap.add_argument("--others", nargs="*", default=None)
+ap.add_argument("--set", default="dev", choices=["dev", "check"], help="dev: the 70 development pages; check: the untouched check pages (scripts/check_pages.py)")
 a = ap.parse_args()
+if a.judges is None: a.judges = ["opus", "sonnet", "argon"] if a.set == "dev" else ["haiku", "flash", "argon"]
+if a.others is None: a.others = ["haiku", "flash"] if a.set == "dev" else []
 census = json.loads(Path("out/census/census_data.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";"))
 KIND = {k["kind"]: k["name"] for k in census["kinds"]}
-dev = json.loads(Path("out/census/dev_data.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";"))
-draft = {p["id"]: p for p in dev["pages"]}
+if a.set == "dev":
+    dev = json.loads(Path("out/census/dev_data.js").read_text(encoding="utf-8").split("=", 1)[1].rstrip().rstrip(";"))
+    draft = {p["id"]: p for p in dev["pages"]}
+else:  # no draft labels of ours on the check pages: only the page's kind
+    draft = {p["page"]: {"kind": p["kind"], "lines": []} for p in json.load(open(L / "check_pages.json", encoding="utf-8"))["pages"]}
 
 
 def load(who, page):
-    f = L / f"dev_{who}" / f"{page}.json"
+    f = L / f"{a.set}_{who}" / f"{page}.json"
     if not f.exists():
         return None
     try:
@@ -35,13 +42,14 @@ def load(who, page):
         return None
 
 
-pages = sorted(p.name for p in (L / "dev_inputs").iterdir())
+pages = sorted(p.name for p in (L / f"{a.set}_inputs").iterdir())
 everyone = a.judges + a.others
 pair, have = defaultdict(Counter), Counter()
+pair_kind = defaultdict(Counter)  # (kind, x, y) -> lines, same, blocks, same_blocks
 status, per_kind, ours, splits, rows = Counter(), defaultdict(Counter), defaultdict(Counter), Counter(), []
 for page in pages:
-    ids = [l["id"] for l in json.load(open(L / "dev_inputs" / page / "lines.json", encoding="utf-8"))]
-    texts = {l["id"]: l["text"] for l in json.load(open(L / "dev_inputs" / page / "lines.json", encoding="utf-8"))}
+    ids = [l["id"] for l in json.load(open(L / f"{a.set}_inputs" / page / "lines.json", encoding="utf-8"))]
+    texts = {l["id"]: l["text"] for l in json.load(open(L / f"{a.set}_inputs" / page / "lines.json", encoding="utf-8"))}
     got = {w: load(w, page) for w in everyone}
     for w in everyone: have[w] += got[w] is not None
     for i, x in enumerate(everyone):
@@ -49,6 +57,9 @@ for page in pages:
             if got[x] and got[y]:
                 pair[x, y]["lines"] += len(ids); pair[x, y]["same"] += sum(got[x][0].get(r) == got[y][0].get(r) for r in ids)
                 pair[x, y]["blocks"] += len(got[x][1] | got[y][1]); pair[x, y]["same_blocks"] += len(got[x][1] & got[y][1])
+                pk = pair_kind[draft[page]["kind"] if page in draft else "?", x, y]
+                pk["lines"] += len(ids); pk["same"] += sum(got[x][0].get(r) == got[y][0].get(r) for r in ids)
+                pk["blocks"] += len(got[x][1] | got[y][1]); pk["same_blocks"] += len(got[x][1] & got[y][1])
     js = [w for w in a.judges if got[w]]
     if len(js) < len(a.judges):
         continue
@@ -76,13 +87,21 @@ for (x, y), c in pair.items():
 t = sum(status.values())
 if t:
     print(f"\njudges {a.judges}: {t} lines | all agree {100 * status['settled'] / t:.1f}% | two to one {100 * status['majority'] / t:.1f}% | all differ {100 * status['open'] / t:.1f}%")
-    print("by kind of page (all agree | our structure model against the judges' label):")
-    for k, c in sorted(per_kind.items(), key=lambda kv: kv[1]["settled"] / max(sum(kv[1].values()), 1)):
+    if a.set == "dev": print("by kind of page (all agree | our structure model against the judges' label):")
+    for k, c in (sorted(per_kind.items(), key=lambda kv: kv[1]["settled"] / max(sum(kv[1].values()), 1)) if a.set == "dev" else []):
         n = sum(c.values()); o = ours[k]
         print(f"  {k:38s} {100 * c['settled'] / n:5.1f}% of {n:4d} lines | ours {100 * o['right'] / max(o['lines'], 1):5.1f}%")
-    o = ours["ALL"]; print(f"our structure model overall: {100 * o['right'] / max(o['lines'], 1):.1f}% of {o['lines']} lines")
+    if a.set != "dev":  # no draft of ours here: the labellers' agreement by kind instead, so the noise of the reference is known
+        prs = [(x, y) for i, x in enumerate(a.judges) for y in a.judges[i + 1 :]]
+        print("by kind of page: all three agree / two to one / no majority (share of lines); then each pair: same type % | identical blocks %")
+        print(f"  {'kind of page':38s} {'lines':>5s} {'all':>5s} {'2:1':>5s} {'none':>5s}  " + "  ".join(f"{x[:5]}-{y[:5]:<5s}" + " " * 4 for x, y in prs))
+        for k, c in sorted(per_kind.items(), key=lambda kv: kv[1]["settled"] / max(sum(kv[1].values()), 1)):
+            n = sum(c.values())
+            cells = "  ".join(f"{100 * pair_kind[k, x, y]['same'] / max(pair_kind[k, x, y]['lines'], 1):5.1f}|{100 * pair_kind[k, x, y]['same_blocks'] / max(pair_kind[k, x, y]['blocks'], 1):5.1f}" for x, y in prs)
+            print(f"  {k:38s} {n:5d} {100 * c['settled'] / n:5.1f} {100 * c['majority'] / n:5.1f} {100 * c['open'] / n:5.1f}  {cells}")
+    o = ours["ALL"]; a.set == "dev" and print(f"our structure model overall: {100 * o['right'] / max(o['lines'], 1):.1f}% of {o['lines']} lines")
     for w in a.others:
         if ours[w]["lines"]: print(f"{w} against the judges' label: {100 * ours[w]['right'] / ours[w]['lines']:.1f}% of {ours[w]['lines']} lines")
     print("where the judges split most:", ", ".join(f"{' vs '.join(k)} ×{n}" for k, n in splits.most_common(8)))
-    print("where ours is wrong most (judges say / we say):", ", ".join(f"{k}/{m} ×{n}" for (k, m), n in ours["confusions"].most_common(8)))
-json.dump({"status": dict(status), "rows": rows}, open(L / "dev_disagreements.json", "w"), ensure_ascii=False)
+    if a.set == "dev": print("where ours is wrong most (judges say / we say):", ", ".join(f"{k}/{m} ×{n}" for (k, m), n in ours["confusions"].most_common(8)))
+json.dump({"status": dict(status), "rows": rows}, open(L / f"{a.set}_disagreements.json", "w"), ensure_ascii=False)

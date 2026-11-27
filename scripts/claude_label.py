@@ -42,7 +42,7 @@ LINES
 __LINES__
 """
 ap = argparse.ArgumentParser()
-ap.add_argument("what", choices=["now", "batch", "collect"]); ap.add_argument("--inputs", required=True); ap.add_argument("--out", required=True)
+ap.add_argument("what", choices=["now", "batch", "collect", "check"]); ap.add_argument("--inputs", required=True); ap.add_argument("--out", required=True)
 ap.add_argument("--model", default="claude-haiku-5-5"); ap.add_argument("--effort", default="high", help="measured on 70 judged pages: low 94.6%, medium 96.3%, high 98.2% of line types"); ap.add_argument("--workers", type=int, default=6)
 ap.add_argument("--cap", type=float, default=8.0, help="stop when logged spend for this model reaches this many dollars"); ap.add_argument("--limit", type=int, default=0)
 ap.add_argument("--batch-size", type=int, default=400); ap.add_argument("--est", type=float, default=0.75, help="batch: expected dollars per 1,000 pages, to keep submitted work under the cap")
@@ -53,7 +53,8 @@ GUIDE = Path("out/labeller/guide.md").read_text(encoding="utf-8")
 
 def client():
     f = Path.home() / ".config/ocrl/anthropic_key"
-    return anthropic.Anthropic(api_key=f.read_text().strip()) if f.exists() else anthropic.Anthropic()
+    kw = {"timeout": 1800.0}  # a batch request carries its pictures (about 0.4 MB a page); a slow uplink needs time
+    return anthropic.Anthropic(api_key=f.read_text().strip(), **kw) if f.exists() else anthropic.Anthropic(**kw)
 
 
 def spent():
@@ -118,6 +119,14 @@ else:
     def save():
         json.dump(meta, open(str(mf) + ".tmp", "w")); Path(str(mf) + ".tmp").replace(mf)
 
+if a.what == "check":  # batches on the account from the last day that _batch.json does not know (a create whose reply was lost)
+    known = set(meta["batches"]); since = time.time() - 86400; n = 0
+    for b in c.messages.batches.list(limit=100):
+        if b.created_at.timestamp() < since: break
+        n += 1
+        if b.id not in known:
+            print(f"UNRECORDED batch {b.id[-8:]} created {b.created_at:%H:%M:%S}, {b.processing_status}, requests {b.request_counts}")
+    print(f"{n} batches on the account in the last day, {len(known)} recorded here"); sys.exit()
 if a.what == "batch":
     sent = set(meta["ids"].values()); collected = set(meta["collected"])
     pending = sum(len(meta["members"].get(b, [])) for b in meta["batches"] if b not in collected)
@@ -136,7 +145,7 @@ if a.what == "batch":
             print(f"stopping before {len(todo) - i} pages: logged ${spent():.2f} + {pending + len(part)} pages in flight at ${a.est}/1,000 would pass the ${a.cap} cap"); break
         k0 = len(meta["ids"])
         reqs = [{"custom_id": f"p{k0 + k:06d}", "params": params(d)} for k, d in enumerate(part)]
-        b = c.messages.batches.create(requests=reqs)
+        b = c.with_options(max_retries=0).messages.batches.create(requests=reqs)  # no silent resend: a lost reply could mean a second, unrecorded batch
         meta["batches"].append(b.id); meta["members"][b.id] = [r["custom_id"] for r in reqs]
         for r, d in zip(reqs, part): meta["ids"][r["custom_id"]] = d.name
         if a.retry: meta["retried"] += [d.name for d in part]

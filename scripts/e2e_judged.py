@@ -30,6 +30,14 @@ What is scored, per page, per kind of page and overall:
     uv run python scripts/e2e_judged.py --show base_v2                                  # the summary again
     uv run python scripts/e2e_judged.py --rescore base_v2      # score saved masters again (after a scorer change)
 
+A second, untouched test set (--set check): about 200 pages from documents no part of this project had used,
+chosen by scripts/check_pages.py (list in out/labeller/check_pages.json, inputs in out/labeller/check_inputs,
+PDFs in /home/yassine/data/check_docs). Its reference is made the same way from three other labellers, Haiku,
+Gemini Flash and Gemini Argon (out/labeller/check_haiku|check_flash|check_argon): a line's type is what two of
+the three chose; blocks and order are scored against Haiku's blocks (Flash's and Argon's shown too). A saved run
+remembers its set, so --show, --rescore and --compare need no --set. NEVER tune on these pages.
+    uv run python scripts/e2e_judged.py --set check --name check_now --typer "out/structure_v2.pt+out/structure_v3.pt"
+
 Results: out/e2e/NAME.json (everything, per page), out/e2e/NAME.offenders.txt (the lines we got wrong,
 worst pages first), out/e2e/NAME/masters/PAGE.master.json (what the owner would see), and
 out/e2e/NAME/infos/PAGE.pkl (the lines read, for --lines-from).
@@ -57,6 +65,23 @@ PAGES = E2E / "pages"
 DOCS = Path("/home/yassine/data/judged_docs")  # ID/ID.pdf, fetched from the owner's bucket
 JUDGES = ("opus", "sonnet", "argon")
 BLOCK_REF = "opus"  # blocks and reading order: Opus's labelling, the one that agrees most with the other two
+SET = "dev"
+# the test sets: their inputs, label folders (LAB/PREFIX_JUDGE), judges, block reference, PDFs and where each page's kind is
+SETS = {
+    "dev": {"inputs": "dev_inputs", "prefix": "dev", "judges": ("opus", "sonnet", "argon"), "block_ref": "opus", "docs": "/home/yassine/data/judged_docs"},
+    "check": {"inputs": "check_inputs", "prefix": "check", "judges": ("haiku", "flash", "argon"), "block_ref": "haiku", "docs": "/home/yassine/data/check_docs"},
+}
+
+
+def use_set(name: str) -> None:
+    """Switch every module-level setting to one test set (\"dev\", the default, or \"check\")."""
+    global SET, JUDGES, BLOCK_REF, DOCS
+    cfg = SETS[name]
+    SET, JUDGES, BLOCK_REF, DOCS = name, cfg["judges"], cfg["block_ref"], Path(cfg["docs"])
+
+
+def _who(names) -> list[str]:
+    return [n.capitalize() for n in names]
 ASIDE = {"running_head", "running_foot", "page_number", "noise"}  # outside the reading order
 DPI = 300
 SLACK = 0.02  # inch, as score_with_compare.py
@@ -72,23 +97,29 @@ def _js(path: Path) -> dict:
 
 
 def load_reference() -> dict[str, dict]:
-    """Every development page: Azure's lines, the majority type of each line, each judge's blocks, its kind."""
-    kinds = {p["id"]: p["kind"] for p in _js(ROOT / "out/census/dev_data.js")["pages"]}
+    """Every page of the current set: Azure's lines, the majority type of each line, each judge's blocks, its kind."""
+    cfg = SETS[SET]
+    if SET == "dev":
+        kinds = {p["id"]: p["kind"] for p in _js(ROOT / "out/census/dev_data.js")["pages"]}
+    else:
+        kinds = {p["page"]: p["kind"] for p in json.loads((LAB / f"{SET}_pages.json").read_text(encoding="utf-8"))["pages"]}
     refs = {}
-    for d in sorted((LAB / "dev_inputs").iterdir()):
+    for d in sorted((LAB / cfg["inputs"]).iterdir()):
+        if not (d / "lines.json").exists():
+            continue
         page = d.name
         doc, n = page.rsplit("_p", 1)
         lines = json.loads((d / "lines.json").read_text(encoding="utf-8"))
         blocks = {}
         for w in JUDGES:
-            f = LAB / f"dev_{w}" / f"{page}.json"
+            f = LAB / f"{cfg['prefix']}_{w}" / f"{page}.json"
             if f.exists():
                 blocks[w] = json.loads(f.read_text(encoding="utf-8"))["blocks"]
         types = {w: {r: b["type"] for b in bl for r in b["lines"]} for w, bl in blocks.items()}
         majority, votes = {}, {}
         for ln in lines:
             v = Counter(types[w].get(ln["id"]) for w in types)
-            top, cnt = v.most_common(1)[0]
+            top, cnt = (v.most_common(1) or [(None, 0)])[0]  # no labels yet (a run made before labelling, --rescore later): no majority
             votes[ln["id"]] = {w: types[w].get(ln["id"]) for w in types}
             if top is not None and cnt >= 2:
                 majority[ln["id"]] = top
@@ -361,12 +392,13 @@ def summary(res: dict) -> str:
          f"reader {Path(cfg.get('reader') or cfg.get('ckpt') or '?').parent.name or cfg.get('reader')}" + (f" | lines from {cfg['lines_from']}" if cfg.get("lines_from") else "")]
     if res.get("errors"):
         L.append(f"!! {len(res['errors'])} pages FAILED and count as all lost: {', '.join(res['errors'])}")
-    L.append(f"  line types right   {_f(m['types'])}%   (vs Opus {_f(m['types_vs_opus'])}, Sonnet {_f(m['types_vs_sonnet'])}, Argon {_f(m['types_vs_argon'])})")
+    others = [j for j in JUDGES if j != BLOCK_REF]
+    L.append(f"  line types right   {_f(m['types'])}%   (vs " + ", ".join(f"{n} {_f(m['types_vs_' + j])}" for n, j in zip(_who(JUDGES), JUDGES)) + ")")
     L.append(f"  lost lines         {_f(m['lost'])}%   (reference lines in no line of ours; counted wrong above)")
     L.append(f"  blocks exact       {_f(m['blocks_exact'])}%   split {_f(m['blocks_split'])}%  merged {_f(m['blocks_merged'])}%   "
-             f"(exact vs Sonnet {_f(m['blocks_vs_sonnet'])}, Argon {_f(m['blocks_vs_argon'])})")
+             "(exact vs " + ", ".join(f"{n} {_f(m['blocks_vs_' + j])}" for n, j in zip(_who(others), others)) + ")")
     L.append(f"  reading order      in a block {_f(m['order_in'])}%  in a table {_f(m['order_table'])}%  across blocks {_f(m['order_across'])}%   "
-             f"(across vs Sonnet {_f(m['across_vs_sonnet'])}, Argon {_f(m['across_vs_argon'])})")
+             "(across vs " + ", ".join(f"{n} {_f(m['across_vs_' + j])}" for n, j in zip(_who(others), others)) + ")")
     L.append(f"  text vs AZURE      {_f(m['text_vs_azure'], d=2)}% characters differ (Arabic-only lines {_f(m['text_vs_azure_arabic'], d=2)}%; "
              f"{tot['x_lines']} lines matched one to one) - agreement with Azure, not accuracy")
     L.append(f"  speed              {_f(m['sec_page'], d=2)} s a page (reading {_f(m['sec_read'], d=2)}, structure {_f(m['sec_structure'], d=2)}, "
@@ -395,7 +427,10 @@ def compare(a: dict, b: dict) -> str:
     keys = [("types", "line types right"), ("lost", "lost lines"), ("blocks_exact", "blocks exact"), ("blocks_split", "blocks split"),
             ("blocks_merged", "blocks merged"), ("order_in", "order in a block"), ("order_table", "order in a table"),
             ("order_across", "order across blocks"), ("text_vs_azure", "text differs from Azure"), ("sec_page", "seconds a page"),
-            ("types_vs_sonnet", "types vs Sonnet"), ("types_vs_argon", "types vs Argon")]
+            ] + [(f"types_vs_{j}", f"types vs {n}") for n, j in zip(_who(JUDGES), JUDGES) if j != BLOCK_REF]
+    if SET != "dev":  # blocks and order against each labeller alone, so the choice of reference can be seen
+        keys += [(f"blocks_vs_{j}", f"blocks exact vs {n}") for n, j in zip(_who(JUDGES), JUDGES) if j != BLOCK_REF]
+        keys += [(f"across_vs_{j}", f"order across vs {n}") for n, j in zip(_who(JUDGES), JUDGES) if j != BLOCK_REF]
     L = [f"{'':28s} {a['name']:>12s} {b['name']:>12s} {'change':>8s}"]
     for k, what in keys:
         d = mb[k] - ma[k]
@@ -421,7 +456,8 @@ def compare(a: dict, b: dict) -> str:
 def write_offenders(res: dict, path: Path) -> None:
     rows = sorted(res["pages"].items(), key=lambda kv: -len(kv[1]["wrong"]))
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"# lines of run {res['name']} whose type differs from the majority of Opus, Sonnet and Argon (LOST: in no line of ours)\n")
+        w = _who(JUDGES)
+        f.write(f"# lines of run {res['name']} whose type differs from the majority of {', '.join(w[:-1])} and {w[-1]} (LOST: in no line of ours)\n")
         f.write("# page image: out/e2e/pages/PAGE.png; our master file: out/e2e/NAME/masters/PAGE.master.json\n")
         for pg, p in rows:
             if not p["wrong"]:
@@ -481,7 +517,7 @@ def run(name: str, pipeline=None, pages: list[str] | None = None, lines_from: st
     pipeline = pipeline or LocalPipeline()
     out = E2E / name
     (out / "masters").mkdir(parents=True, exist_ok=True); (out / "infos").mkdir(parents=True, exist_ok=True)
-    res = {"name": name, "config": {**(pipeline.describe() if hasattr(pipeline, "describe") else {"pipeline": repr(pipeline)}), "lines_from": lines_from},
+    res = {"name": name, "set": SET, "config": {**(pipeline.describe() if hasattr(pipeline, "describe") else {"pipeline": repr(pipeline)}), "lines_from": lines_from},
            "provenance": provenance(out), "when": time.strftime("%Y-%m-%d %H:%M"), "pages": {}, "errors": []}
     began = time.time()
     for i, pg in enumerate(names, 1):
@@ -529,6 +565,7 @@ def save(res: dict) -> None:
 def rescore(name: str) -> dict:
     """Score the masters an earlier run saved, again, without parsing (after a change to the scorer)."""
     old = load(name)
+    use_set(old.get("set", "dev"))
     refs = load_reference()
     for pg, p in old["pages"].items():
         f = E2E / name / "masters" / f"{pg}.master.json"
@@ -553,10 +590,11 @@ def labelling_as_master(ref: dict, who: str) -> dict:
     return {"pages": [{"number": ref["number"], "width": W, "height": H}], "blocks": blocks}
 
 
-def selftest(who: str = BLOCK_REF) -> dict:
+def selftest(who: str | None = None) -> dict:
     """Score a judge's own labelling as if it were our output. Against that judge everything should be 100%
     (and text 0%); anything short of that is the ruler's own error (Azure boxes that overlap, lines left out)."""
-    res = {"name": f"selftest_{who}", "config": {"typer": f"{who}'s own labels", "reader": "azure"}, "pages": {}, "errors": []}
+    who = who or BLOCK_REF
+    res = {"name": f"selftest_{who}", "set": SET, "config": {"typer": f"{who}'s own labels", "reader": "azure"}, "pages": {}, "errors": []}
     for pg, ref in load_reference().items():
         s = score_page(labelling_as_master(ref, who), ref)
         s["c"]["pages"] = 1
@@ -568,7 +606,7 @@ def selftest_folder(folder: str) -> dict:
     """Score any labeller's answers (FOLDER/PAGE.json, the labeller answer format) as if they were our output, on
     Azure's lines like --selftest. A page with no answer counts as an empty page (every line lost)."""
     folder = Path(folder)
-    res = {"name": f"selftest_{folder.name}", "config": {"typer": f"labels in {folder}", "reader": "azure"}, "pages": {}, "errors": []}
+    res = {"name": f"selftest_{folder.name}", "set": SET, "config": {"typer": f"labels in {folder}", "reader": "azure"}, "pages": {}, "errors": []}
     for pg, ref in load_reference().items():
         f = folder / f"{pg}.json"
         blocks = json.loads(f.read_text(encoding="utf-8"))["blocks"] if f.exists() else []
@@ -581,7 +619,10 @@ def selftest_folder(folder: str) -> dict:
 
 
 def load(name: str) -> dict:
-    return json.loads((E2E / f"{name}.json").read_text(encoding="utf-8"))
+    """A saved run; also switches to the test set it was scored on (runs saved before --set existed are \"dev\")."""
+    res = json.loads((E2E / f"{name}.json").read_text(encoding="utf-8"))
+    use_set(res.get("set", "dev"))
+    return res
 
 
 def _cap_memory(gb: float = 12.0) -> None:
@@ -595,6 +636,7 @@ def _cap_memory(gb: float = 12.0) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--name", help="name of this run: results go to out/e2e/NAME.json")
+    ap.add_argument("--set", default="dev", choices=sorted(SETS), help="which test set: the 70 development pages (dev) or the untouched check pages (check)")
     ap.add_argument("--typer", default=TYPER, help="structure model checkpoint ('' for the hand-written rules)")
     ap.add_argument("--reader", default=READER, help="line reader checkpoint ('' for the cluster reader)")
     ap.add_argument("--linefinder", default=LINEFINDER)
@@ -608,15 +650,19 @@ def main() -> None:
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"), help="print two saved runs side by side")
     ap.add_argument("--show", metavar="NAME", help="print a saved run's summary")
     ap.add_argument("--rescore", metavar="NAME", help="score a saved run's masters again")
-    ap.add_argument("--selftest", nargs="?", const=BLOCK_REF, metavar="JUDGE", help="score a judge's own labels as our output: checks the ruler")
+    ap.add_argument("--selftest", nargs="?", const="", metavar="JUDGE", help="score a judge's own labels as our output: checks the ruler")
     ap.add_argument("--selftest-folder", metavar="DIR", help="score a labeller's answers (DIR/PAGE.json, e.g. out/labeller/dev_qwenft) as our output, on Azure's lines")
     a = ap.parse_args()
+    use_set(a.set)
     if a.selftest_folder:
         r = selftest_folder(a.selftest_folder); save(r); print(summary(r)); return
-    if a.selftest:
+    if a.selftest is not None:
         r = selftest(a.selftest); save(r); print(summary(r)); return
     if a.compare:
-        print(compare(load(a.compare[0]), load(a.compare[1]))); return
+        ra, rb = load(a.compare[0]), load(a.compare[1])
+        if ra.get("set", "dev") != rb.get("set", "dev"):
+            ap.error(f"{a.compare[0]} was scored on the {ra.get('set', 'dev')} set and {a.compare[1]} on the {rb.get('set', 'dev')} set")
+        print(compare(ra, rb)); return
     if a.show:
         print(summary(load(a.show))); return
     if a.rescore:
