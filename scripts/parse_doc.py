@@ -2,7 +2,7 @@
 
     uv run python scripts/parse_doc.py --pdf data/real/0013/0013-002-001-005.pdf --out out/parsed/0013-002-001-005
 """
-import argparse, json, subprocess, time
+import argparse, json, os, subprocess, time
 from pathlib import Path
 
 import cv2
@@ -23,7 +23,7 @@ ap.add_argument("--lines", default="", help="a line-finder checkpoint; without i
 ap.add_argument("--typer", default="out/structure_v2.pt+out/structure_v3.pt",
                 help="a structure checkpoint, or two joined by '+' (the combined typer, the default); '' for the hand-written rules")
 args = ap.parse_args()
-torch.set_num_threads(12)
+torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", 12)))  # the laptop runs heavy jobs at 4
 out = Path(args.out); (out / "pages").mkdir(parents=True, exist_ok=True)
 doc_id = Path(args.pdf).stem
 rng = ["-f", args.pages.split("-")[0], "-l", args.pages.split("-")[-1]] if args.pages else []

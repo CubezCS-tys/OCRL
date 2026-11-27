@@ -106,6 +106,24 @@ def linked(az_boxes, ours) -> list[bool]:
     return [c != "missing" for c in cases([tuple(o) for o in ours], az_boxes)]
 
 
+def invented(ours, az) -> list[int]:
+    """Lines of ours that no Azure line is linked to (line_diag's link): text we made up, or ink Azure did not read."""
+    out = []
+    for i, o in enumerate(ours):
+        ocx, ocy = (o[0] + o[2]) / 2, (o[1] + o[3]) / 2
+        oq = 0.25 * (o[3] - o[1])
+        hit = False
+        for z in az:
+            zcx, zcy = (z[0] + z[2]) / 2, (z[1] + z[3]) / 2
+            zq = 0.25 * (z[3] - z[1])
+            if (o[0] - 4 <= zcx <= o[2] + 4 and o[1] + oq <= zcy <= o[3] - oq) or (z[0] <= ocx <= z[2] and z[1] + zq <= ocy <= z[3] - zq):
+                hit = True
+                break
+        if not hit:
+            out.append(i)
+    return out
+
+
 def run(a) -> None:
     import torch
     from rapidfuzz.distance import Levenshtein
@@ -127,6 +145,9 @@ def run(a) -> None:
     pages = json.load(open(a.pages))
     if a.only:
         pages = [p for p in pages if p["kind"] in a.only.split(",")]
+    if a.keys:  # doc:page ... or a file holding them, one per line
+        ks = set(open(a.keys[0]).read().split()) if len(a.keys) == 1 and Path(a.keys[0]).exists() else set(a.keys)
+        pages = [p for p in pages if f"{p['doc']}:{p['page']}" in ks]
     tot, by_kind, txt = Counter(), {}, Counter()
     rows = []
     examples: dict[str, list] = {c: [] for c in CAUSES}
@@ -148,7 +169,7 @@ def run(a) -> None:
             for _ in range(k):  # one quarter turn counter-clockwise: (x, y) -> (y, W - x)
                 az = [(y0, W0 - x1, y1, W0 - x0) for x0, y0, x1, y1 in az]
                 H0, W0 = W0, H0
-        final, texts, lwarn = [], [], []
+        final, texts, lwarn, lnote = [], [], [], []
         for r, res in doc.regions:
             ox, oy = r.x0 - 16, r.y0 - 16
             for ln in res.lines:
@@ -157,11 +178,20 @@ def run(a) -> None:
                 bx = res.layout.boxes[[b for c in ln.clusters for b in c.blobs]]
                 final.append((bx[:, 0].min() + ox, bx[:, 1].min() + oy, bx[:, 2].max() + ox, bx[:, 3].max() + oy)); texts.append(ln.text)
                 lwarn.append(list(getattr(ln, "warnings", [])))
+                lnote.append(list(getattr(ln, "notes", [])))
         for w in lwarn:
             for x in w:
                 tot["line warning: " + x] += 1
         cl = doc.cleaned
         read = [f for f, t in zip(final, texts) if t.strip()]
+        inv = invented(read, az)
+        tot["invented"] += len(inv)
+        read_notes = [n for n, t in zip(lnote, texts) if t.strip()]
+        for i in range(len(read)):
+            for x in read_notes[i]:
+                tot["line note: " + x] += 1
+                tot["line note invented: " + x] += i in inv
+        ruled = bool(cl.uprights or cl.grid)
         cs_all = cases([tuple(o) for o in final], az) if final else ["missing"] * len(az)
         cs_read = cases([tuple(o) for o in read], az) if read else ["missing"] * len(az)
         lost = [j for j, c in enumerate(cs_read) if c == "missing"]
@@ -201,6 +231,7 @@ def run(a) -> None:
                 cause[j] = c
                 tot[c] += 1
                 by_kind.setdefault(p["kind"], Counter())[c] += 1
+                by_kind.setdefault("ruled" if ruled else "unruled", Counter())[c] += 1
                 if len(examples[c]) < 400:
                     examples[c].append((p["doc"], p["page"], az_text[j][:40]))
         # text agreement on lines one-to-one
@@ -224,9 +255,17 @@ def run(a) -> None:
             tot["case:" + c] += n
         by_kind.setdefault(p["kind"], Counter())["lines"] += len(az)
         by_kind[p["kind"]]["lost"] += len(lost)
+        by_kind[p["kind"]]["invented"] += len(inv)
+        rk = by_kind.setdefault("ruled" if ruled else "unruled", Counter())
+        rk["lines"] += len(az); rk["lost"] += len(lost); rk["invented"] += len(inv)
+        for c, n in per.items():
+            by_kind[p["kind"]]["case:" + c] += n; rk["case:" + c] += n
         tot["lines"] += len(az); tot["lost"] += len(lost); tot["ours"] += len(final); tot["ours_empty"] += len(final) - len(read)
         rows.append({"doc": p["doc"], "page": p["page"], "kind": p["kind"], "azure": len(az), "ours": len(final), "lost": len(lost),
-                     "text_chars": txt["chars"] - t_before[0], "text_edits": txt["edits"] - t_before[1], "cases": dict(per), "causes": dict(Counter(cause.values())), "warnings": list(getattr(doc, "warnings", []))})
+                     "text_chars": txt["chars"] - t_before[0], "text_edits": txt["edits"] - t_before[1], "cases": dict(per), "causes": dict(Counter(cause.values())), "warnings": list(getattr(doc, "warnings", [])),
+                     "ruled": ruled, "invented": len(inv),
+                     "lost_lines": [{"box": [round(float(v)) for v in az[j]], "cause": cause[j], "text": az_text[j][:60]} for j in lost],
+                     "invented_lines": [{"box": [round(float(v)) for v in read[i]], "text": [t for t in texts if t.strip()][i][:60], "notes": read_notes[i]} for i in inv]})
         if not a.quiet:
             print(f"{p['doc']} p{p['page']:<3d} {p['kind']:6s} azure {len(az):4d} ours {len(final):4d} lost {len(lost):3d} " +
                   " ".join(f"{k}={v}" for k, v in Counter(cause.values()).most_common()) + f" | {getattr(doc, 'warnings', [])} {doc.cleaned.notes}", flush=True)
@@ -246,7 +285,9 @@ def run(a) -> None:
     L = max(tot["lines"], 1)
     print(f"\n{len(pages)} pages, {tot['lines']} Azure lines, {time.time() - t0:.0f} s")
     print(f"one-to-one {100 * tot['case:one-to-one'] / L:.1f}% | joins a row {100 * tot['case:ours joins a row'] / L:.1f}% | joins lines {100 * tot['case:ours joins lines'] / L:.1f}% "
-          f"| splits {100 * tot['case:ours splits'] / L:.1f}% | tangled {100 * tot['case:tangled'] / L:.1f}% | LOST {100 * tot['lost'] / L:.2f}%")
+          f"| splits {100 * tot['case:ours splits'] / L:.1f}% | tangled {100 * tot['case:tangled'] / L:.1f}% | LOST {100 * tot['lost'] / L:.2f}% ({tot['lost']})")
+    print(f"invented (our read lines linked to no Azure line): {tot['invented']} of {tot['ours'] - tot['ours_empty']}")
+    print("   line notes:", {k[11:]: (v, tot['line note invented: ' + k[11:]]) for k, v in tot.items() if k.startswith("line note: ")}, "(count, of them invented)")
     print(f"text differing from Azure on one-to-one lines: {100 * txt['edits'] / max(txt['chars'], 1):.2f}% of {txt['chars']} characters | our lines read empty: {tot['ours_empty']}")
     print(f"   one-to-one lines with a warning: {100 * txt['warned_edits'] / max(txt['warned_chars'], 1):.1f}% differ ({txt['warned_chars']} chars); without: {100 * txt['clean_edits'] / max(txt['clean_chars'], 1):.2f}%")
     print("   line warnings:", {k[14:]: v for k, v in tot.items() if k.startswith("line warning: ")})
@@ -255,7 +296,7 @@ def run(a) -> None:
         print(f"   {c:22s} {tot[c]:5d}  ({100 * tot[c] / max(tot['lost'], 1):4.1f}% of lost)")
     print(f"   (finder never marked, but would on the raw page: {tot['finder: raw page would mark it']})")
     for k, v in sorted(by_kind.items()):
-        print(f"   kind {k:6s}: {v['lines']} lines, lost {100 * v['lost'] / max(v['lines'], 1):.2f}% | " + " ".join(f"{c}={v[c]}" for c in CAUSES if v[c]))
+        print(f"   kind {k:7s}: {v['lines']} lines, lost {100 * v['lost'] / max(v['lines'], 1):.2f}% ({v['lost']}), 1:1 {100 * v['case:one-to-one'] / max(v['lines'], 1):.1f}%, splits {v['case:ours splits']}, invented {v['invented']} | " + " ".join(f"{c}={v[c]}" for c in CAUSES if v[c]))
     if a.name:
         out = ROOT / "out/lost" / f"{a.name}.json"
         json.dump({"total": dict(tot), "text": dict(txt), "by_kind": {k: dict(v) for k, v in by_kind.items()}, "pages": rows, "examples": examples}, open(out, "w"), ensure_ascii=False, indent=1)
@@ -269,6 +310,7 @@ if __name__ == "__main__":
     ap.add_argument("--finder", default="out/linefinder.pt"); ap.add_argument("--no-read", action="store_true", help="skip the line reader (no 'read as empty', no text)")
     ap.add_argument("--set", nargs="*", default=[], help="module switches: ocrl.blobs.clean.DRAWINGS=1")
     ap.add_argument("--only", default="", help="kinds of page to run, e.g. rows,review")
+    ap.add_argument("--keys", nargs="*", default=[], help="only these pages, doc:page (or one file listing them)")
     a = ap.parse_args()
     if a.pick:
         pick(a.pick)

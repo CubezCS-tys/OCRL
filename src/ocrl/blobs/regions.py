@@ -25,6 +25,7 @@ class Region:
     # A region joined from pieces (a column and the footer under it) is not a rectangle: its box can reach
     # over a neighbouring column. The pieces say which ink is really its own.
     parts: list[tuple[int, int, int, int]] | None = None
+    lone: bool = False  # a region made for one finder line no other region held (_orphan_regions)
 
     def crop(self, gray: np.ndarray, pad: int = 16) -> np.ndarray:
         """This region's own ink on white, with a margin: whatever lies in the box but outside the
@@ -324,6 +325,40 @@ def split_at_gaps(lines: np.ndarray, gray: np.ndarray, wide: float = 2.5) -> np.
     return np.array(out, np.float32).reshape(-1, 4)
 
 
+OWN_REGION = True  # a finder line whose centre no region holds is read in a region of its own (_orphan_regions)
+
+
+def _orphan_regions(gray: np.ndarray, regions: list[Region], owned: list[np.ndarray], lines: np.ndarray, n_finder: int | None = None):
+    """Regions are found from letter-sized ink, so a line of small print set apart (a map's place names, a page
+    number in small digits, a lone mark at the foot) can lie in no region and was never read, although the
+    finder marked it. Each such line gets a region of its own: its box with a little margin (a fifth of its height
+    up and down, half of it sideways), placed in the reading order before the first region that starts below it.
+    Only the finder's own lines (the first `n_finder`), not lines a rule added after it (pipeline.cell_ink): a
+    guess on top of a guess made more invented lines than it found."""
+    held = np.zeros(len(lines), bool)
+    if n_finder is not None:
+        held[n_finder:] = True
+    for m in owned:
+        held |= m
+    if held.all():
+        return regions, owned
+    H, W = gray.shape
+    regions, owned = list(regions), list(owned)
+    for i in np.flatnonzero(~held):
+        x0, y0, x1, y1 = lines[i]
+        h = y1 - y0
+        box = (max(int(x0 - 0.5 * h), 0), max(int(y0 - 0.2 * h), 0), min(int(np.ceil(x1 + 0.5 * h)), W), min(int(np.ceil(y1 + 0.2 * h)), H))
+        if box[2] <= box[0] or box[3] <= box[1]:
+            continue
+        m = np.zeros(len(lines), bool)
+        m[i] = True
+        cy = (y0 + y1) / 2
+        at = next((k for k, r in enumerate(regions) if r.y0 > cy), len(regions))
+        regions.insert(at, Region(*box, parts=[box], lone=True))
+        owned.insert(at, m)
+    return regions, owned
+
+
 WHOLE_LINES = True  # a region reaches out to the whole of each line it holds (_whole_lines)
 
 
@@ -367,7 +402,7 @@ def _whole_lines(gray: np.ndarray, regions: list[Region], owned: list[np.ndarray
                 over[j] += [b for b in boxes if min(b[2], o.x1) > max(b[0], o.x0) and min(b[3], o.y1) > max(b[1], o.y0)]
         nx0, ny0 = min(r.x0, min(b[0] for b in boxes)), min(r.y0, min(b[1] for b in boxes))
         nx1, ny1 = max(r.x1, max(b[2] for b in boxes)), max(r.y1, max(b[3] for b in boxes))
-        regions[k] = Region(nx0, ny0, nx1, ny1, (r.parts or [(r.x0, r.y0, r.x1, r.y1)]) + boxes)
+        regions[k] = Region(nx0, ny0, nx1, ny1, (r.parts or [(r.x0, r.y0, r.x1, r.y1)]) + boxes, r.lone)
     imgs = []
     for k in range(len(regions)):
         if not over[k]:
@@ -381,7 +416,7 @@ def _whole_lines(gray: np.ndarray, regions: list[Region], owned: list[np.ndarray
 
 
 def plan(gray: np.ndarray, rules: list[tuple[int, int, int, int]] | None = None, lines: np.ndarray | None = None, pad: int = 16,
-         from_lines: bool = False):
+         from_lines: bool = False, n_finder: int | None = None):
     """Everything the page is cut into, in reading order: [(region, its image, hints or None, rank or None)].
 
     The image is the region's own ink with `pad` pixels of margin; hints are line boxes in that image's
@@ -402,6 +437,12 @@ def plan(gray: np.ndarray, rules: list[tuple[int, int, int, int]] | None = None,
         cx, cy = (lines[:, 0] + lines[:, 2]) / 2, (lines[:, 1] + lines[:, 3]) / 2
         regions = find_regions(gray, rules=rules, ltr=ltr)
         owned = [(cx >= r.x0) & (cx <= r.x1) & (cy >= r.y0) & (cy <= r.y1) for r in regions]
+        if OWN_REGION:
+            # a region joined from pieces paints out what lies outside them (Region.crop): it holds a line only if
+            # one of its pieces does
+            owned = [m & np.any([(cx >= a) & (cx <= c) & (cy >= b) & (cy <= d) for a, b, c, d in r.parts], axis=0)
+                     if r.parts and len(r.parts) > 1 else m for r, m in zip(regions, owned)]
+            regions, owned = _orphan_regions(gray, regions, owned, lines, n_finder)
         if WHOLE_LINES:
             regions, gray_of = _whole_lines(gray, regions, owned, lines, ltr)
         else:

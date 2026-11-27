@@ -263,21 +263,22 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
         for part in b["parts"]:
             pg = next(p for p in master["pages"] if p["number"] == part["page"])
             warns = part.get("line_warnings") or [[] for _ in part["line_boxes"]]  # pipeline._warn: not read properly
-            for (x0, y0, x1, y1), t, w in zip(part["line_boxes"], part["line_texts"], warns):
+            notes = part.get("line_notes") or [[] for _ in part["line_boxes"]]  # pipeline.N_*: found or read by a rule
+            for (x0, y0, x1, y1), t, w, nt in zip(part["line_boxes"], part["line_texts"], warns, notes):
                 if not t.strip() and (not w or (b.get("shown_as") == "picture" and b["type"] == "figure")):
                     continue  # a picture's unread specks are not labels: the picture itself shows them
                 n_line += 1
                 boxes.setdefault(part["page"], []).append(
                     f'<div class="lb{" warned" if w else ""}" id="L{n_line}" style="left:{100 * x0 / pg["width"]:.2f}%;top:{100 * y0 / pg["height"]:.2f}%;'
                     f'width:{100 * (x1 - x0) / pg["width"]:.2f}%;height:{100 * (y1 - y0) / pg["height"]:.2f}%"></div>')
-                got.append((t or "[?]", n_line, part["page"], w))
+                got.append((t or "[?]", n_line, part["page"], w, nt))
         out = ""
         pic = b.get("shown_as") == "picture" and b["type"] == "figure"  # a picture's labels: each a word or two on its own
-        for k, (t, n, pno, w) in enumerate(got):
+        for k, (t, n, pno, w, nt) in enumerate(got):
             # a Latin word broken over two lines is shown whole, as the block's text has it (parse.join_sep)
             joined = not pic and k + 1 < len(got) and join_sep(t, got[k + 1][0]) == ""
             shown = t.rstrip()[:-1] if joined else t
-            out += f'<span class="ln{" warned" if w else ""}" data-l="L{n}" title="scan page {pno}{html.escape(": not read properly: " + "; ".join(w)) if w else ""}">{html.escape(shown)}</span>' + ("" if joined or k + 1 == len(got) else " ")
+            out += f'<span class="ln{" warned" if w else ""}" data-l="L{n}" title="scan page {pno}{html.escape(": not read properly: " + "; ".join(w)) if w else ""}{html.escape(" (" + "; ".join(nt) + ")") if nt else ""}">{html.escape(shown)}</span>' + ("" if joined or k + 1 == len(got) else " ")
         spans[b["id"]] = out
     # each page image is embedded once, as a background both the scan and any picture cut from it in the text use
     first = master["pages"][0]["number"]

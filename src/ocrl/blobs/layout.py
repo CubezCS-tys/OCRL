@@ -53,6 +53,10 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
     it the lines come out in that order, not simply top to bottom (two columns side by side in one image)."""
     ink = binarize(gray)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    if CUT_TOUCHING and hints is not None and len(hints) > 1:
+        cut = _cut_touching(ink, labels, stats, hints)
+        if cut:
+            n, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
     boxes = np.stack(
         [stats[:, 0], stats[:, 1], stats[:, 0] + stats[:, 2], stats[:, 1] + stats[:, 3]], axis=1
     ).astype(np.int32)
@@ -104,6 +108,12 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
         np.minimum.at(lo, which[small_in], boxes[small_in, 0])
         np.maximum.at(hi, which[small_in], boxes[small_in, 2])
         line_of_marks = (total >= 2.0 * stroke ** 2) & (count >= 2) & (hi - lo >= hints[:, 3] - hints[:, 1])
+        if LONE_MARK:
+            # A table cell holding one dash, or a lone zero: one mark, and the finder drew its line round just that
+            # mark (the mark fills most of the line's length). A speck the finder took for a line is no wider
+            # than a dot; a dash is several strokes long.
+            span = hi - lo
+            line_of_marks |= (total >= 2.0 * stroke ** 2) & (count >= 1) & (span >= 0.5 * (hints[:, 2] - hints[:, 0])) & (span >= 3 * stroke)
         hinted |= small_in & line_of_marks[np.maximum(which, 0)]
         loose = live & ~hinted & (which < 0) & (h >= 0.45 * tall)
         seeds = np.flatnonzero(hinted | loose)
@@ -205,10 +215,18 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
         D = int(round(0.9 * scale[l]))
         below = (y0 + y1) / 2 > baseline[l]
         found = 0
-        for up in (below, not below):
-            found = _look(body_lab, x0, x1, y0, y1, D, up)
-            if found:
-                break
+        if NEARER_SIDE:
+            # A mark between two lines set tight is the dot under a letter of the line above, or the mark over a
+            # letter of the line below (a Latin accent, an Arabic vowel mark): it belongs to the nearer of the two.
+            # The side the line's baseline suggests wins a tie and anything within a stroke of it.
+            a, da = _look(body_lab, x0, x1, y0, y1, D, below, dist=True)
+            b_, db = _look(body_lab, x0, x1, y0, y1, D, not below, dist=True)
+            found = b_ if b_ and (not a or db + stroke < da) else a
+        else:
+            for up in (below, not below):
+                found = _look(body_lab, x0, x1, y0, y1, D, up)
+                if found:
+                    break
         if not found:
             wx0, wy0 = max(x0 - R, 0), max(y0 - R, 0)
             win = body_lab[wy0 : y1 + R, wx0 : x1 + R]
@@ -224,8 +242,12 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
         host[b] = found
         line[b] = line[found]
     for b in orphans:  # nothing nearby to belong to: stands alone
+        l, gap = which_line(boxes[b, 0], boxes[b, 2], (boxes[b, 1] + boxes[b, 3]) / 2) if n_lines else (-1, 0.0)
+        if LEVEL_ORPHANS and l >= 0 and (abs((boxes[b, 1] + boxes[b, 3]) / 2 - baseline[l]) > 1.5 * scale[l] or gap > far):
+            role[b] = NOISE  # a speck level with no line, or far out beside it: dust, not part of a line it would stretch
+            continue
         role[b] = BODY
-        line[b] = which_line(boxes[b, 0], boxes[b, 2], (boxes[b, 1] + boxes[b, 3]) / 2)[0] if n_lines else -1
+        line[b] = l
 
     # 5. Reading order: bodies right to left by their right edge.
     lines = []
@@ -236,17 +258,58 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
     return Layout(labels, boxes, area, role, line, host, lines, stroke, tall)
 
 
-def _look(body_lab: np.ndarray, x0: int, x1: int, y0: int, y1: int, reach: int, up: bool) -> int:
-    """Nearest body ink straight above (or below) the box, within `reach` rows; 0 if none."""
+NEARER_SIDE = True  # a mark between two lines goes to the nearer body ink, above or below (analyze, step 4)
+LEVEL_ORPHANS = True  # a speck with nothing near that is level with no line is dust, not a body of the nearest line
+LONE_MARK = False  # a finder line round one mark that fills it (a dash, a lone zero) keeps that mark as its letter (analyze)
+CUT_TOUCHING = False  # a blob reaching into the cores of two finder lines is cut between them (_cut_touching)
+
+
+def _cut_touching(ink: np.ndarray, labels: np.ndarray, stats: np.ndarray, hints: np.ndarray) -> int:
+    """Lines set tight (italic references, a descender running into the ascender below) can touch: one blob then
+    holds letters of two lines, and the line it is given grows down (or up) over its neighbour, so that the line
+    box no longer stands for the line. The finder marks each line's core, the middle band of its height, which
+    a letter of another line does not reach. A blob that covers most of the core band of two lines, one above
+    the other, is cut between them, on the row halfway between the two cores (its own pixels on that row are
+    made paper; nothing else changes). Changes `ink` in place; returns how many blobs were cut."""
+    from .linefinder import CORE
+    hh = hints[:, 3] - hints[:, 1]
+    c0, c1 = hints[:, 1] + CORE[0] * hh, hints[:, 1] + CORE[1] * hh
+    x, y, w, h = (stats[1:, i].astype(np.float32) for i in range(4))
+    # how much of each hint's core each blob covers, up and down; and does it sit across that hint sideways
+    cover = (np.minimum(y[:, None] + h[:, None], c1[None]) - np.maximum(y[:, None], c0[None])) / np.maximum(c1 - c0, 1)[None]
+    side = (np.minimum(x[:, None] + w[:, None], hints[None, :, 2]) - np.maximum(x[:, None], hints[None, :, 0])) > 0
+    hit = (cover >= 0.5) & side
+    two = np.flatnonzero((hit.sum(1) >= 2) & (h <= 4 * np.median(hh)))
+    n = 0
+    for b in two:
+        ks = np.flatnonzero(hit[b])
+        ks = ks[np.argsort(c0[ks])]
+        lab = b + 1
+        x0, y0, x1, y1 = int(x[b]), int(y[b]), int(x[b] + w[b]), int(y[b] + h[b])
+        did = False
+        for u, l in zip(ks, ks[1:]):
+            if c1[u] >= c0[l]:  # cores overlap: two hints side by side or one inside the other, not two lines
+                continue
+            r = int(round((c1[u] + c0[l]) / 2))
+            if y0 < r < y1:
+                row = labels[r, x0:x1] == lab
+                ink[r, x0:x1][row] = 0
+                did = did or bool(row.any())
+        n += did
+    return n
+
+
+def _look(body_lab: np.ndarray, x0: int, x1: int, y0: int, y1: int, reach: int, up: bool, dist: bool = False):
+    """Nearest body ink straight above (or below) the box, within `reach` rows; 0 if none. With `dist`: (that, rows away)."""
     if up:
         strip = body_lab[max(y0 - reach, 0) : y0, x0:x1][::-1]
     else:
         strip = body_lab[y1 : y1 + reach, x0:x1]
     rows = np.flatnonzero(strip.any(axis=1))
     if len(rows) == 0:
-        return 0
+        return (0, np.inf) if dist else 0
     row = strip[rows[0]]
-    return int(row[row > 0][0])
+    return (int(row[row > 0][0]), float(rows[0])) if dist else int(row[row > 0][0])
 
 
 def _chain(boxes: np.ndarray, tall: float, min_overlap: float = 0.5, reach: float = 8.0) -> np.ndarray:

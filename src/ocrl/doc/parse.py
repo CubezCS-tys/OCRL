@@ -70,6 +70,7 @@ class TextLine:
     order: int = 0  # place in the region's reading order, as the pipeline gave it (rows of a table run sideways)
     ink: tuple = ()  # stroke weight, ink density and boldness for size (structure.features.ink_features)
     warnings: list = field(default_factory=list)  # why the line may not have been read properly (pipeline._warn)
+    notes: list = field(default_factory=list)  # how a rule, not the models, found or read the line (pipeline.N_*)
 
 
 @dataclass
@@ -151,7 +152,7 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
             bx = res.layout.boxes[ids]
             lines.append(TextLine(number, ri, int(bx[:, 0].min()) + ox, int(bx[:, 1].min()) + oy, int(bx[:, 2].max()) + ox,
                                   int(bx[:, 3].max()) + oy, ln_geo.baseline + oy, ln_geo.scale, ln.text, len(ln.clusters), len(lines),
-                                  warnings=list(getattr(ln, "warnings", []))))
+                                  warnings=list(getattr(ln, "warnings", [])), notes=list(getattr(ln, "notes", []))))
     if lines:
         from ..structure.features import ink_features
         for l, f in zip(lines, ink_features(gray, np.array([[l.x0, l.y0, l.x1, l.y1] for l in lines], np.float32))):
@@ -1359,10 +1360,14 @@ def _add_warnings(blocks: list[dict], infos: list[PageInfo], dpi: int) -> None:
     """Beside each part's line_texts, "line_warnings": for each line, why it may not have been read properly
     (pipeline._warn). Only on parts where some line has one."""
     warned = {(l.page, tuple(round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1))): l.warnings for p in infos for l in p.lines if l.warnings}
-    if not warned:
-        return
-    for b in blocks:
+    for b in blocks if warned else []:
         for part in b.get("parts", []):
             ws = [list(warned.get((part["page"], tuple(lb)), [])) for lb in part.get("line_boxes", [])]
             if any(ws):
                 part["line_warnings"] = ws
+    noted = {(l.page, tuple(round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1))): l.notes for p in infos for l in p.lines if getattr(l, "notes", None)}
+    for b in blocks if noted else []:
+        for part in b.get("parts", []):
+            ns = [list(noted.get((part["page"], tuple(lb)), [])) for lb in part.get("line_boxes", [])]
+            if any(ns):
+                part["line_notes"] = ns  # how a rule found or read the line (pipeline.N_*)

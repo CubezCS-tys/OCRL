@@ -47,6 +47,7 @@ class LineResult:
     text: str
     clusters: list[Cluster]  # right to left, as they sit on the page
     warnings: list[str] = field(default_factory=list)  # why this line may not have been read properly (_warn)
+    notes: list[str] = field(default_factory=list)  # how the line was found or read when a rule, not the models, did it (N_*)
 
 
 @dataclass
@@ -172,7 +173,7 @@ class OCR:
     def _read_lines(self, gray: np.ndarray, lay: Layout, ids: dict[int, list[int]]) -> PageResult:
         """Read each line as one image. A line's image is the box of its ink with a little margin."""
         H, W = gray.shape
-        crops, owners = [], []
+        crops, owners, turned_up = [], [], set()
         for li, ln in enumerate(lay.lines):
             blobs = [b for body in ln.bodies for b in ids[body]]
             if not blobs:
@@ -182,10 +183,34 @@ class OCR:
             if DROP_SPECKS and max(x1 - x0, y1 - y0) < 12:
                 continue  # a speck (12 pixels at 300 dpi is under a 6-point letter): read, it becomes invented text
             h = y1 - y0
-            crops.append(gray[max(int(y0 - 0.18 * h), 0) : min(int(y1 + 0.18 * h) + 1, H), max(int(x0 - 0.3 * h), 0) : min(int(x1 + 0.3 * h) + 1, W)])
+            w = x1 - x0
+            # A line set on its side (a running head printed up the margin, a table's turned header) is a tall narrow
+            # box: four times as high as wide and three letters long at least. Its margins go by its width; the
+            # reader reads lines lying down, so it is given the line turned both ways and the way it is surer of wins.
+            # Not a thin stroke (a rule's leftover, a margin bar): at least half a letter wide, and more than one piece.
+            if UPRIGHT_LINES and h >= 4 * w and h >= 3 * lay.tall and w >= 0.5 * lay.tall and len(ln.bodies) >= 2:
+                c = gray[max(int(y0 - 0.3 * w), 0) : min(int(y1 + 0.3 * w) + 1, H), max(int(x0 - 0.18 * w), 0) : min(int(x1 + 0.18 * w) + 1, W)]
+                a, b = np.ascontiguousarray(np.rot90(c, 1)), np.ascontiguousarray(np.rot90(c, 3))
+                crops.append(a if self._surety(a) >= self._surety(b) else b)
+                turned_up.add(li)
+            elif SHORT_INK and h < 0.6 * lay.tall:
+                # Ink lower than any letter (a dash, a row of dots, a lone zero): a crop as high as the ink alone
+                # blows a dash up to the reader's full height. It is given the room of a line of the page's letters,
+                # centred on the ink, as every line it learned from had.
+                m = 0.5 * (0.8 * lay.tall - h)
+                crops.append(gray[max(int(y0 - m), 0) : min(int(y1 + m) + 1, H), max(int(x0 - 0.25 * lay.tall), 0) : min(int(x1 + 0.25 * lay.tall) + 1, W)])
+            else:
+                crops.append(gray[max(int(y0 - 0.18 * h), 0) : min(int(y1 + 0.18 * h) + 1, H), max(int(x0 - 0.3 * h), 0) : min(int(x1 + 0.3 * h) + 1, W)])
             owners.append(li)
         texts = dict(zip(owners, self.line_reader.read(crops))) if crops else {}
         lines = [LineResult(texts.get(li, ""), [Cluster(b, ids[b], "", 0.0) for b in ln.bodies] if li in texts else []) for li, ln in enumerate(lay.lines)]
+        for li in turned_up:
+            lines[li].notes.append(N_TURNED)
+        if DASH:
+            for li, ln in enumerate(lines):
+                n = _dashes(lay, [b for c in ln.clusters for b in c.blobs]) if ln.clusters else 0
+                if n and ln.text.strip() != "-" * n:
+                    ln.text, ln.notes = "-" * n, ln.notes + [N_DASH]
         return PageResult(lines, lay, ["read-by-line"])
 
     def read_page(self, gray: np.ndarray) -> DocumentPage:
@@ -206,24 +231,45 @@ class OCR:
                     gray = np.ascontiguousarray(np.rot90(gray, turned))
         cleaned = clean_page(gray)
         gray = cleaned.gray
-        lines = self.finder.lines(gray) if self.finder is not None else None
+        prob = self.finder.prob(gray) if self.finder is not None else None
+        lines = self.finder.lines(gray, prob=prob) if self.finder is not None else None
+        weak = self.finder.lines(gray, thresh=WEAK, prob=prob, below=0.5) if self.finder is not None and WEAK else None
         lines = split_at_uprights(lines, cleaned.uprights, gray)  # one line per table cell, not two cells as one
         if regions_mod.GAP_SPLIT and lines is not None:
             lines = regions_mod.split_at_gaps(lines, gray)  # nor two cells of an unruled table
+        n_found = len(lines) if lines is not None else 0  # lines past this one were added by rule, not the finder
+        if weak is not None and len(weak):
+            weak = split_at_uprights(weak, cleaned.uprights, gray)
+            if regions_mod.GAP_SPLIT:
+                weak = regions_mod.split_at_gaps(weak, gray)
+            lines = np.concatenate([lines, weak])
         if CELL_INK and lines is not None:
             lines = cell_ink(lines, cleaned.uprights, gray)
         ltr = is_ltr(gray)
         ups = np.asarray(cleaned.uprights, np.float32).reshape(-1, 4)
         out = []
-        for r, crop, hints, rank in plan(gray, cleaned.rules, lines, pad=16):
+        for r, crop, hints, rank in plan(gray, cleaned.rules, lines, pad=16, n_finder=n_found):
             res = self.read(crop, hints=hints, hint_rank=rank)
             if self.line_reader is not None:
                 _join_marks(res, ltr, ups - np.array([r.x0 - 16, r.y0 - 16] * 2, np.float32))
             out.append((r, res))
+        if any(getattr(r, "lone", False) for r, _ in out):
+            _drop_twice_read(out)
+        if lines is not None and len(lines) > n_found:
+            _note_rule_lines(out, lines[:n_found], lines[n_found:])
         doc = DocumentPage(out, cleaned, lines, turned=turned, kept_upright=kept)
         if WARN:
             _warn(doc)
         return doc
+
+    @torch.no_grad()
+    def _surety(self, c: np.ndarray) -> float:
+        """How sure the line reader is of its letters on one line image (mean top probability over non-blank frames)."""
+        x = torch.from_numpy(self.line_reader.prepare(c))[None, None].float().to(self.line_reader.dev)
+        p = torch.softmax(self.line_reader.net(x).float(), -1)[:, 0].cpu().numpy()
+        top = p.argmax(-1)
+        letters = top != (0 if self.line_reader.blank_first else p.shape[1] - 1)
+        return float(p.max(-1)[letters].mean()) if letters.any() else 0.0
 
     @torch.no_grad()
     def _upright(self, gray: np.ndarray) -> int:
@@ -388,6 +434,72 @@ def _warn(doc: DocumentPage) -> None:
 
 
 UNREAD_SHARE = 0.12  # one page of heavily vowelled text from an unseen journal had 10% (its marks), with no line lost
+
+
+WEAK = 0.0  # if > 0: cores the finder marked above this but never above 0.5 are lines too, with a note (N_RULE)
+UPRIGHT_LINES = True  # a line standing on its side (tall and narrow) is turned to lie down before it is read
+N_TURNED = "a line on its side: turned to be read"
+DASH = True  # a line whose ink is nothing but one to three short flat strokes is read as dashes (_dashes)
+SHORT_INK = True  # a line whose ink is lower than the page's letters is cropped with a letter's height round it (_read_lines)
+N_DASH = "read by rule: short flat strokes alone, taken for dashes"
+N_RULE = "found by rule: ink the line finder did not mark"
+
+
+def _dashes(lay: Layout, blobs: list[int]) -> int:
+    """How many dashes a line's ink is, if it is nothing but short flat strokes side by side (0 if it is anything
+    else). A dash: at least two and a half times as long as it is high, no higher than a third of the page's
+    letters, longer than three strokes' width (not a dot) and not long enough to be a rule (the cleaner takes
+    those). The reader, trained on lines of words, reads a lone dash poorly; its shape says what it is."""
+    big = [b for b in blobs if lay.area[b] >= max(0.5 * lay.stroke ** 2, 3)]
+    if not big or len(big) > 3:
+        return 0
+    for b in big:
+        x0, y0, x1, y1 = lay.boxes[b]
+        w, h = x1 - x0, y1 - y0
+        if not (w >= 2.5 * h and h <= 0.35 * lay.tall and w >= 3 * lay.stroke and w <= 4 * lay.tall):
+            return 0
+    return len(big)
+
+
+def _drop_twice_read(out: list) -> None:
+    """A region made for one line no other region held (regions._orphan_regions) takes the page round that line;
+    where its ink was also read in a neighbouring region, the line is that region's, and the lone region's reading
+    of it (the same ink again, or a piece of it) is dropped: a line of a lone region whose box is half covered by a
+    line of another region."""
+    def boxes(r, res):
+        ox, oy = r.x0 - 16, r.y0 - 16
+        got = []
+        for li, ln in enumerate(res.lines):
+            if ln.clusters:
+                bx = res.layout.boxes[[b for c in ln.clusters for b in c.blobs]]
+                got.append((li, bx[:, 0].min() + ox, bx[:, 1].min() + oy, bx[:, 2].max() + ox, bx[:, 3].max() + oy))
+        return got
+    others = np.asarray([b[1:] for r, res in out if not getattr(r, "lone", False) for b in boxes(r, res)], np.float32).reshape(-1, 4)
+    if not len(others):
+        return
+    for r, res in out:
+        if not getattr(r, "lone", False):
+            continue
+        for li, x0, y0, x1, y1 in boxes(r, res):
+            iw = np.clip(np.minimum(others[:, 2], x1) - np.maximum(others[:, 0], x0), 0, None)
+            ih = np.clip(np.minimum(others[:, 3], y1) - np.maximum(others[:, 1], y0), 0, None)
+            if (iw * ih).max() >= 0.5 * max((x1 - x0) * (y1 - y0), 1):
+                res.lines[li].clusters, res.lines[li].text = [], ""
+
+
+def _note_rule_lines(out: list, found: np.ndarray, added: np.ndarray) -> None:
+    """Every line read from a box a rule added (cell_ink, ...), with no box of the finder holding its centre,
+    says so in its notes."""
+    for r, res in out:
+        ox, oy = r.x0 - 16, r.y0 - 16
+        for ln in res.lines:
+            if not ln.clusters:
+                continue
+            bx = res.layout.boxes[[b for c in ln.clusters for b in c.blobs]]
+            cx, cy = (bx[:, 0].min() + bx[:, 2].max()) / 2 + ox, (bx[:, 1].min() + bx[:, 3].max()) / 2 + oy
+            inb = lambda B: len(B) and ((B[:, 0] <= cx) & (cx <= B[:, 2]) & (B[:, 1] <= cy) & (cy <= B[:, 3])).any()
+            if inb(added) and not inb(found):
+                ln.notes.append(N_RULE)
 
 
 CELL_INK = True  # ink alone in a ruled table cell that no line holds is a line of its own (cell_ink)

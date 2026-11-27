@@ -65,17 +65,26 @@ class LineFinder:
         self.net.load_state_dict(ck["model"])
 
     @torch.no_grad()
-    def lines(self, gray: np.ndarray, thresh: float = 0.5) -> np.ndarray:
-        """Line boxes [n, 4] x0, y0, x1, y1 in the page's own pixels, top to bottom."""
+    def prob(self, gray: np.ndarray) -> tuple[np.ndarray, float]:
+        """The finder's core probability on the page scaled to WIDTH, and the scale."""
         small, f = scale_page(gray)
         H, W = small.shape
         ph, pw = (-H) % 8, (-W) % 8
         x = torch.from_numpy(np.pad(small, ((0, ph), (0, pw)), constant_values=255)).float()[None, None].to(self.dev) / 255
-        prob = torch.sigmoid(self.net(x))[0, 0, :H, :W].cpu().numpy()
-        n, _, stats, _ = cv2.connectedComponentsWithStats((prob > thresh).astype(np.uint8), connectivity=8)
+        return torch.sigmoid(self.net(x))[0, 0, :H, :W].cpu().numpy(), f
+
+    def lines(self, gray: np.ndarray, thresh: float = 0.5, prob: tuple[np.ndarray, float] | None = None,
+              below: float | None = None) -> np.ndarray:
+        """Line boxes [n, 4] x0, y0, x1, y1 in the page's own pixels, top to bottom. With `below`: only the cores
+        that never reach `below` (the lines the finder was unsure of, found at a lower `thresh`)."""
+        prob, f = prob if prob is not None else self.prob(gray)
+        n, lab, stats, _ = cv2.connectedComponentsWithStats((prob > thresh).astype(np.uint8), connectivity=8)
+        peak = np.zeros(n)
+        if below is not None:
+            np.maximum.at(peak, lab.ravel(), prob.ravel())
         out = []
-        for x0, y0, w, h, area in stats[1:]:
-            if area < 12 or w < 4:
+        for i, (x0, y0, w, h, area) in enumerate(stats[1:], 1):
+            if area < 12 or w < 4 or (below is not None and peak[i] > below):
                 continue
             full = h / (CORE[1] - CORE[0])  # the whole line's height, from its core's
             top = y0 - CORE[0] * full
