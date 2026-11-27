@@ -256,7 +256,15 @@ class Typer:
     Combined, the first model (v2) cuts the page into blocks and both name the lines: a line's type is the
     best of 0.3 x the first model's probabilities + 0.7 x the last's (v3), over the 27 block types. Within
     each block of running text all lines then take one type (`_one_type_per_block`), and the list rule runs
-    last, as for a single model."""
+    last, as for a single model.
+
+    A spec "qwen:URL[?options]+fallback spec" gives the vision-language model's typer instead (structure/qwen.py)."""
+
+    def __new__(cls, path: str = "", lists: bool = True):
+        if cls is Typer and isinstance(path, str) and path.startswith("qwen:"):
+            from .qwen import QwenTyper
+            return QwenTyper(path, lists)
+        return super().__new__(cls)
 
     def __init__(self, path: str, lists: bool = True):
         self.paths = path.split("+")

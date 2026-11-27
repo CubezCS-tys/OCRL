@@ -283,6 +283,8 @@ def parse(ocr: OCR, pages: list[np.ndarray], first: int = 1, typer=None,
         if progress is not None:
             progress(len(infos), len(pages))
     if typer is not None:
+        if hasattr(typer, "prepare"):  # a typer that looks at the pictures asks for every page at once (structure/qwen.py)
+            typer.prepare(infos, pages)
         return infos, _typed_blocks(infos, typer)
     by_no = {p.number: p for p in infos}
     per_page = [_cut_blocks(p) for p in infos]
@@ -469,6 +471,8 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
     margins = _margin_lines(infos) if MARGINS else [{} for _ in infos]
     for p, margin in zip(infos, margins):
         ls = sorted(p.lines, key=lambda l: (l.region, l.order))
+        if hasattr(typer, "reorder"):
+            ls = typer.reorder(ls)  # its own reading order, if it is set to use it
         if not ls:
             continue
         ink = np.array([l.ink for l in ls], np.float32) if all(len(l.ink) == 3 for l in ls) else None
@@ -630,12 +634,13 @@ def _join_tables(blocks: list[Block]) -> None:
     """A table that ends its page and one that opens the next, with the same columns, are one table;
     and a caption directly above or below a table is that table's caption."""
     from ..structure.tag import ASIDE
-    from .tables import continues
+    from .tables import continues, same_direction
 
     flow = [b for b in blocks if b.type not in ASIDE]
     for a, b in zip(flow, flow[1:]):
         if a.type == b.type == "table" and a.table is not None and b.table is not None and continues(a.table, b.table):
             b.parent = a.parent or a
+            same_direction(b.parent.table, b.table)
     for i, b in enumerate(blocks):
         if b.type != "table" or b.table is None:
             continue
@@ -737,15 +742,17 @@ def to_master(doc_id: str, infos: list[PageInfo], blocks: list[Block], dpi: int 
             for (page, _), ls in regions.items():
                 box = [round(v / dpi, 3) for v in g.box(ls)]
                 lines = [[round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1)] for l in ls]
+                texts = [l.text for l in ls]  # each line's own text, beside its box (the viewer links the two)
                 if parts and parts[-1]["page"] == page:
-                    parts[-1]["regions"].append(box); parts[-1]["line_boxes"] += lines
+                    parts[-1]["regions"].append(box); parts[-1]["line_boxes"] += lines; parts[-1]["line_texts"] += texts
                 else:
-                    parts.append({"page": page, "regions": [box], "line_boxes": lines})
+                    parts.append({"page": page, "regions": [box], "line_boxes": lines, "line_texts": texts})
         entry = {"id": b.id, "type": b.type, "text": " ".join(g.text for g in group), "parts": parts}
         if b.type == "table" and b.table is not None:
             # one region per page: the table's own box, not the boxes of the columns its cells fell into
             parts = [{"page": g.table.page, "regions": [[round(v / dpi, 3) for v in g.table.box]],
-                      "line_boxes": [[round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1)] for l in g.table.lines]} for g in group]
+                      "line_boxes": [[round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1)] for l in g.table.lines],
+                      "line_texts": [l.text for l in g.table.lines]} for g in group]
             entry["parts"] = parts
             entry["table"] = _table_json(group, dpi)
             entry["text"] = _table_text(entry["table"])

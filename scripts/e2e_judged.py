@@ -618,6 +618,37 @@ def selftest_folder(folder: str) -> dict:
     return res
 
 
+def typer_on_azure(spec: str, ends: bool = True) -> dict:
+    """The structure step alone: Azure's own lines (boxes, text, order) handed to the typer, page by page, and the
+    blocks it makes scored like one of our master files. No line finding, no reading, none of parse.py's rules
+    (the typer's own list rule and paragraph ends do run). Page size from the labeller input's picture."""
+    import numpy as np
+    from PIL import Image
+    from ocrl.structure.tag import TO_TYPE, Typer
+    typer = Typer(spec)
+    res = {"name": f"azure_{SET}", "set": SET, "config": {"typer": spec, "reader": "azure lines"}, "pages": {}, "errors": []}
+    for pg, ref in load_reference().items():
+        folder = LAB / SETS[SET]["inputs"] / pg
+        with Image.open(next(folder.glob("page_*.jpg"))) as im:
+            W, H = im.width - 70, im.height
+        ls = ref["lines"]
+        boxes = np.array([[l["box"][0] * W / 1000, l["box"][1] * H / 1000, l["box"][2] * W / 1000, l["box"][3] * H / 1000] for l in ls], np.float32).reshape(-1, 4)
+        typer.open_item = False
+        roles, starts, _ = typer.tag(boxes, [l["text"] for l in ls], W, H) if ls else ([], [], None)
+        blocks, prev = [], None
+        for l, r, st in zip(ls, roles, starts):
+            t = TO_TYPE.get(r, "other")
+            if blocks and t == prev and (st < 0.5 or t == "table") and t not in ASIDE:
+                blocks[-1]["lines"].append(l["id"])
+            else:
+                blocks.append({"type": t, "lines": [l["id"]]})
+            prev = t
+        s = score_page(labelling_as_master({**ref, "blocks": {**ref["blocks"], "_typer": blocks}}, "_typer"), ref)
+        s["c"]["pages"] = 1
+        res["pages"][pg] = {"kind": ref["kind"], **s}
+    return res
+
+
 def load(name: str) -> dict:
     """A saved run; also switches to the test set it was scored on (runs saved before --set existed are \"dev\")."""
     res = json.loads((E2E / f"{name}.json").read_text(encoding="utf-8"))
@@ -652,8 +683,13 @@ def main() -> None:
     ap.add_argument("--rescore", metavar="NAME", help="score a saved run's masters again")
     ap.add_argument("--selftest", nargs="?", const="", metavar="JUDGE", help="score a judge's own labels as our output: checks the ruler")
     ap.add_argument("--selftest-folder", metavar="DIR", help="score a labeller's answers (DIR/PAGE.json, e.g. out/labeller/dev_qwenft) as our output, on Azure's lines")
+    ap.add_argument("--azure-typer", metavar="SPEC", help="the structure step alone on Azure's lines (see typer_on_azure); saved as --name")
     a = ap.parse_args()
     use_set(a.set)
+    if a.azure_typer:
+        if a.src:
+            sys.path.insert(0, str(Path(a.src).resolve()))
+        r = typer_on_azure(a.azure_typer); r["name"] = a.name or r["name"]; save(r); print(summary(r)); return
     if a.selftest_folder:
         r = selftest_folder(a.selftest_folder); save(r); print(summary(r)); return
     if a.selftest is not None:

@@ -98,6 +98,8 @@ def work(job_id: str) -> None:
         typer.open_item = False
         infos, blocks = parse(ocr, images, first, typer, progress=progress)
         how = f"OCRL structure model ({' + '.join(Path(t).stem for t in a.typer.split('+'))}) with the list rule, local. Not checked by a person."
+        if hasattr(typer, "how"):  # the vision-language typer says what it did, and how many lines fell back
+            how = typer.how()
         master = to_master(pdf.stem, infos, blocks, 300, Path(a.reader).parent.name + " line reader", how)
         secs = time.time() - t
         job.update(state="writing", stage_began=time.time())
@@ -113,6 +115,8 @@ def work(job_id: str) -> None:
         job.update(state="done", seconds=round(end - began), parse_seconds=round(secs), blocks=len(master["blocks"]), ended=end)
         print(f"{job_id} {job['name']}: {n} pages in {end - began:.0f} s (drawing {job['draw_pace']:.2f} s a page, "
               f"reading {job['read_pace']:.2f} s a page)", flush=True)
+        if hasattr(typer, "doc"):  # the Qwen typer's counts for this document: pages, fallbacks, seconds asking
+            print(f"{job_id} structure: {dict(typer.doc)}", flush=True)
     except Exception as e:
         traceback.print_exc()
         job.update(state="failed", error=f"{type(e).__name__}: {str(e)[:200]}", ended=time.time())

@@ -27,6 +27,7 @@ Box = tuple[int, int, int, int]
 _ARABIC = re.compile("[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]")
 _LATIN = re.compile("[A-Za-z]")
 _DIGIT = re.compile(f"[{DIGITS}]")
+NESTED = True  # a ruled frame with another frame inside it is a box round the table or page, not a table (find_tables)
 _NOT_IN = {"running_head", "running_foot", "page_number", "table_caption", "figure_caption", "footnote"}
 
 
@@ -452,10 +453,11 @@ def _aligned_grid(lines: list, box: Box, lh: float, rules: list[Box]) -> _Grid:
 
 
 def _script_rtl(lines: list, page_lines: list) -> bool:
-    text = " ".join(l.text for l in lines)
+    # letters only: Arabic-Indic digits sit in the Arabic block, but a table of them with English headings is English
+    text = _DIGIT.sub("", " ".join(l.text for l in lines))
     ar, la = len(_ARABIC.findall(text)), len(_LATIN.findall(text))
     if ar + la < 3:  # numbers only: go by the page
-        text = " ".join(l.text for l in page_lines)
+        text = _DIGIT.sub("", " ".join(l.text for l in page_lines))
         ar, la = len(_ARABIC.findall(text)), len(_LATIN.findall(text))
     return ar >= la
 
@@ -526,6 +528,15 @@ def _header(t: Table, page, lh: float) -> int:
     return int(ruled_under or _digit_share(body) >= _digit_share(first) + 0.2)
 
 
+def innermost(boxes: list[Box]) -> list[Box]:
+    """The frames with no other frame wholly inside them. A frame round another frame is a box drawn round
+    the table (or round the whole page, as some journals print every page), not the table: built as one, it
+    took in every line on the page, running heads and body text with the table, and carried on as one
+    table to the document's end."""
+    inside = lambda a, b: a != b and b[0] <= a[0] and b[1] <= a[1] and a[2] <= b[2] and a[3] <= b[3]
+    return [b for b in boxes if not any(inside(a, b) for a in boxes)]
+
+
 def find_tables(page, lines: list, kinds: list[str]) -> list[Table]:
     """Tables on one page. `lines` are the page's lines and `kinds` what the structure model called each.
 
@@ -545,10 +556,15 @@ def find_tables(page, lines: list, kinds: list[str]) -> list[Table]:
         return b[0] - pad <= cx <= b[2] + pad and b[1] - pad <= cy <= b[3] + pad
 
     # --- ruled frames
-    for box in sorted(frames(page.grid, page.uprights, lh_page), key=lambda b: (b[1], -b[2])):
+    found = frames(page.grid, page.uprights, lh_page)
+    found = innermost(found) if NESTED else found
+    for box in sorted(found, key=lambda b: (b[1], -b[2])):
         # inside a frame, whatever it was called (a heading row read as a running head, say), but a page
-        # number: a frame drawn round the whole page, or one reaching down to the foot, holds it too
-        idx = [i for i, l in enumerate(lines) if i not in taken and centre_in(l, box) and kinds[i] != "page_number"]
+        # number in the page's top or bottom margin: a frame drawn round the whole page, or one reaching
+        # down to the foot, holds it too. A number the model called a page number in the body of the page
+        # is a cell (a row number, a total); left out, it went missing from the table.
+        margin = lambda l: l.y1 < 0.12 * page.height or l.y0 > 0.88 * page.height
+        idx = [i for i, l in enumerate(lines) if i not in taken and centre_in(l, box) and not (kinds[i] == "page_number" and margin(l))]
         if len(idx) < 2:
             continue
         ls = [lines[i] for i in idx]
@@ -669,6 +685,19 @@ def continues(a: Table, b: Table) -> bool:
         return False
     wa, wb = a.box[2] - a.box[0], b.box[2] - b.box[0]
     return abs(wa - wb) < 0.15 * max(wa, wb)
+
+
+def same_direction(a: Table, b: Table) -> None:
+    """Give `b`, which carries `a` on over the page, `a`'s direction. Each page's part decides its own from
+    its script, and a part without the header (numbers with a few Latin words, say) can come out the other
+    way: its columns then landed mirrored under the first part's header."""
+    if b.rtl == a.rtl:
+        return
+    for c in b.cells:
+        c.col = b.n_cols - c.col - c.colspan
+    b.cells.sort(key=lambda c: (c.row, c.col))
+    b.lines = [l for c in b.cells for l in c.lines]
+    b.rtl = a.rtl
 
 
 def repeated_header(a: Table, b: Table) -> bool:

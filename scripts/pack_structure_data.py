@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 ap = argparse.ArgumentParser(); ap.add_argument("--out", default="out/structure_v5/pack.json.gz")
+ap.add_argument("--sets", default="bulk,desk", help="labelled sets: LAB/<set>_inputs + LAB/<set>_haiku (e.g. bulk,desk,fresh)")
 ap.add_argument("--exclude-docs", default="0013-002-001-005,0073-000-239-002,0175-000-004-016,0499-026-119-022",
                 help="documents kept out of training (the keyed documents)")
 a = ap.parse_args()
@@ -22,7 +23,7 @@ def size(folder: Path):
 
 
 pages = {}
-for s in ("bulk", "desk"):
+for s in a.sets.split(","):
     for f in sorted((L / f"{s}_inputs").iterdir()):
         lab = L / f"{s}_haiku" / f"{f.name}.json"
         doc = f.name.rsplit("_p", 1)[0]

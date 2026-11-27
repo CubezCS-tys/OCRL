@@ -18,19 +18,24 @@ COLORS = {
     "running_head": "#8a7f66", "title": "#b4232a", "author": "#1f7a46", "affiliation": "#2563a8", "abstract": "#7048a8",
     "heading": "#a3341f", "paragraph": "#56606e", "page_number": "#7b8190", "list_item": "#c2590a", "noise": "#9aa0ab",
     "footnote": "#607d8b", "table_caption": "#4c5fd5", "table": "#0b7285", "reference": "#5a6f1e", "other": "#6b6b6b",
+    # the structure model's other types (structure/tag.py TYPES): each gets its own colour and a place in the legend
+    "running_foot": "#8a7f66", "section_label": "#9c4f96", "supervisor": "#1f7a46", "degree_statement": "#2563a8",
+    "standfirst": "#8b5e34", "keywords": "#7048a8", "figure": "#3f8f8a", "figure_caption": "#4c5fd5", "pull_quote": "#a0567a",
+    "equation": "#5b6abf", "verse": "#b0306a", "handwriting": "#7a5c00",
 }
 NAMES = {"running_head": "Running head", "page_number": "Page number", "list_item": "List item", "noise": "Scan marks",
-         "table_caption": "Table caption"}
+         "table_caption": "Table caption", "running_foot": "Running foot", "section_label": "Section label",
+         "degree_statement": "Degree statement", "figure_caption": "Figure caption", "pull_quote": "Pull quote"}
 
 _CSS = """
 :root{--bg:#f4f1ea;--panel:#fffdf8;--ink:#1d1b16;--muted:#6f695c;--line:#ddd6c6}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;height:100vh}
 header{padding:14px 20px 10px;border-bottom:1px solid var(--line)}
 h1{font-size:17px;margin:0 0 4px;font-weight:600}h1 span{font-weight:400;color:var(--muted)}
 .by{color:var(--muted);font-size:12.5px;max-width:110ch}
 .legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:8px;font-size:12.5px;color:var(--muted)}
 .legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:-1px}
-main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:calc(100vh - 118px)}
+main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);flex:1;min-height:0}
 .pane{overflow-y:auto;padding:14px 20px}
 .cap{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
 .scan{position:relative;margin:0 0 22px;background:#fff;box-shadow:0 1px 4px #0002}
@@ -44,10 +49,13 @@ main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);height:calc(
 .blk{display:grid;grid-template-columns:118px minmax(0,1fr);gap:10px;padding:7px 4px;border-radius:4px;cursor:pointer}
 .tag{font-size:12px;color:var(--c);white-space:nowrap}
 .tag b{display:inline-block;min-width:18px;height:18px;border-radius:9px;background:var(--c);color:#fff;font:600 10.5px/18px "Segoe UI",sans-serif;text-align:center;margin-right:6px;padding:0 4px}
-.txt{direction:rtl;text-align:right;font:500 18px/1.9 "Noto Naskh Arabic","Amiri","Traditional Arabic",serif;overflow-wrap:anywhere}
+.txt{text-align:start;font:500 18px/1.9 "Noto Naskh Arabic","Amiri","Traditional Arabic",serif;overflow-wrap:anywhere}
 .blk.title .txt{font-size:25px;text-align:center}.blk.author .txt,.blk.affiliation .txt{text-align:center}
 .blk.heading .txt{font-weight:700}.blk.aside .txt{color:var(--muted);font-size:15px}
 .blk.table .txt{font-size:14px;color:var(--muted)}
+.lb{position:absolute;display:none;border:2px solid #e8590c;background:#e8590c26;border-radius:2px;pointer-events:none;z-index:2}.lb.on{display:block}
+.ln{border-radius:3px}.blk.verse .ln{display:block}.ln:hover,.ln.on{background:#e8590c2e;box-shadow:0 0 0 2px #e8590c2e}
+details.figs{margin:2px 0;padding:6px 4px;border-radius:4px}details.figs summary{cursor:pointer;font-size:12px;color:var(--c)}details.figs summary b{display:inline-block;min-width:18px;height:18px;border-radius:9px;background:var(--c);color:#fff;font:600 10.5px/18px "Segoe UI",sans-serif;text-align:center;margin-right:6px;padding:0 5px}
 .cell{position:absolute;border:1px dashed color-mix(in srgb,var(--c) 55%,transparent);pointer-events:none}
 .cell.empty{border-style:dotted;border-color:color-mix(in srgb,var(--c) 30%,transparent)}
 table.grid{border-collapse:collapse;margin:2px 0;font:500 15px/1.6 "Noto Naskh Arabic","Amiri","Traditional Arabic",serif;color:var(--ink);background:#fff}
@@ -57,10 +65,16 @@ table.grid caption{caption-side:top;text-align:start;font-weight:700;padding:0 0
 table.grid td.empty{background:repeating-linear-gradient(135deg,#fff 0 5px,#f6f3ec 5px 10px)}
 .tblnote{font:12px "Segoe UI",sans-serif;color:var(--muted);margin-top:3px}
 .blk.table .txt,.blk.table{overflow-x:auto}
-@media(max-width:900px){main{grid-template-columns:1fr;height:auto}.pane{overflow:visible}}
+.dpg{font-size:12px;color:var(--muted);margin:10px 0 2px;padding-top:6px;border-top:1px dashed var(--line)}.dpg:first-child{border:0;margin-top:0;padding-top:0}
+.nav{margin-top:6px;font-size:12.5px;color:var(--muted)}.nav a{display:inline-block;min-width:22px;padding:0 4px;margin:0 1px;text-align:center;color:var(--ink);text-decoration:none;border:1px solid var(--line);border-radius:4px;cursor:pointer}.nav a:hover{background:var(--panel)}
+@media(max-width:900px){body{height:auto;display:block}main{grid-template-columns:1fr}.pane{overflow:visible}}
 """
 
 _JS = """
+document.querySelectorAll('.ln').forEach(e=>{const l=()=>document.getElementById(e.dataset.l);
+  e.addEventListener('mouseenter',()=>l()&&l().classList.add('on'));e.addEventListener('mouseleave',()=>l()&&l().classList.remove('on'));
+  e.addEventListener('click',ev=>{ev.stopPropagation();const b=l();if(b){b.classList.add('on');b.scrollIntoView({behavior:'smooth',block:'center'});}});});
+document.querySelectorAll('.nav a').forEach(a=>a.addEventListener('click',()=>{const p=a.dataset.p;['s','d'].forEach(k=>{const e=document.getElementById(k+p);if(e)e.scrollIntoView({block:'start'});});}));
 const on=(id,v)=>document.querySelectorAll('[data-b="'+id+'"]').forEach(e=>e.classList.toggle('on',v));
 document.querySelectorAll('[data-b]').forEach(e=>{
   e.addEventListener('mouseenter',()=>on(e.dataset.b,true));
@@ -68,6 +82,13 @@ document.querySelectorAll('[data-b]').forEach(e=>{
   e.addEventListener('click',()=>{const o=[...document.querySelectorAll('[data-b="'+e.dataset.b+'"]')].find(x=>x!==e&&x.classList.contains(e.classList.contains('box')?'blk':'box'));if(o)o.scrollIntoView({behavior:'smooth',block:'center'});});
 });
 """
+
+
+def _dir(text: str) -> str:
+    """rtl when the text has at least as many Arabic letters as Latin ones: an English or French block reads left to right."""
+    ar = sum("\u0600" <= c <= "\u06ff" or "\u0750" <= c <= "\u077f" or "\ufb50" <= c <= "\ufeff" for c in text)
+    la = sum(c.isascii() and c.isalpha() or "\u00c0" <= c <= "\u024f" for c in text)
+    return "rtl" if ar >= la else "ltr"
 
 
 def _png(gray: np.ndarray, width: int = 900) -> str:
@@ -106,10 +127,39 @@ def _table_html(b: dict, captions: dict) -> str:
             + (f'<caption data-b="{t["caption"]}" style="--c:{COLORS["table_caption"]}">{html.escape(cap)}</caption>' if cap else "") + "".join(body) + f'</table><div class="tblnote">{note}</div>')
 
 
+def _fold_figures(items: list) -> list[str]:
+    """`items` alternate a tag ((block, page) for a figure block, else None) and the block's HTML. A picture read
+    as text comes out as dozens of figure blocks of a letter or two each; three or more in a row on one page
+    are folded into one line that opens to show them, so the text around them can still be followed."""
+    out, run = [], []
+
+    def flush():
+        if len(run) >= 3:
+            a, z = run[0][0]["order"], run[-1][0]["order"]
+            out.append(f'<details class="figs" style="--c:{COLORS["figure"]}"><summary><b>{a}–{z}</b> Figure · {len(run)} pieces of '
+                       f'a picture read as text (click to show)</summary>' + "".join(h for _, h in run) + "</details>")
+        else:
+            out.extend(h for _, h in run)
+        run.clear()
+
+    for tag, h in zip(items[0::2], items[1::2]):
+        if tag is not None and run and run[-1][0]["parts"][0]["page"] == tag[1]:
+            run.append((tag[0], h))
+            continue
+        flush()
+        if tag is not None:
+            run.append((tag[0], h))
+        else:
+            out.append(h)
+    flush()
+    return out
+
+
 def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 300, seconds: float = 0.0) -> None:
     name = lambda t: NAMES.get(t, t.replace("_", " ").capitalize())
-    used = [t for t in COLORS if any(b["type"] == t for b in master["blocks"])]
     counts = Counter(b["type"] for b in master["blocks"])
+    # every type present, also one this file has no colour for (it is drawn grey but still listed)
+    used = [t for t in COLORS if t in counts] + sorted(t for t in counts if t not in COLORS)
     boxes: dict[int, list[str]] = {}
     for b in master["blocks"]:
         aside = "aside" in b
@@ -129,24 +179,53 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
                 badge = "" if aside else f"<b>{b['order']}</b>"
                 boxes.setdefault(part["page"], []).append(
                     f'<div class="box{" aside" if aside else ""}" data-b="{b["id"]}" style="{style}" title="{name(b["type"])}">{badge}</div>')
+    # each line of running text: a box on the scan, shown while the line is pointed at in the text
+    spans: dict[str, str] = {}
+    n_line = 0
+    for b in master["blocks"]:
+        if "table" in b or b["type"] == "noise" or not b["parts"] or not all("line_texts" in p for p in b["parts"]):
+            continue
+        out = []
+        for part in b["parts"]:
+            pg = next(p for p in master["pages"] if p["number"] == part["page"])
+            for (x0, y0, x1, y1), t in zip(part["line_boxes"], part["line_texts"]):
+                if not t:
+                    continue
+                n_line += 1
+                boxes.setdefault(part["page"], []).append(
+                    f'<div class="lb" id="L{n_line}" style="left:{100 * x0 / pg["width"]:.2f}%;top:{100 * y0 / pg["height"]:.2f}%;'
+                    f'width:{100 * (x1 - x0) / pg["width"]:.2f}%;height:{100 * (y1 - y0) / pg["height"]:.2f}%"></div>')
+                out.append(f'<span class="ln" data-l="L{n_line}" title="scan page {part["page"]}">{html.escape(t)}</span>')
+        spans[b["id"]] = " ".join(out)
     scans = "".join(
-        f'<p class="pg">scan page {i}</p><div class="scan"><img src="{_png(img)}" alt="Scan of page {i}">{"".join(boxes.get(i, []))}</div>'
+        f'<p class="pg" id="s{i}">scan page {i}</p><div class="scan"><img src="{_png(img)}" alt="Scan of page {i}">{"".join(boxes.get(i, []))}</div>'
         for i, img in enumerate(images, master["pages"][0]["number"]))
     captions = {b["id"]: b["text"] for b in master["blocks"] if b["type"] == "table_caption"}
-    doc = "".join(
-        f'<div class="blk {b["type"]}{" aside" if "aside" in b else ""}" data-b="{b["id"]}" style="--c:{COLORS.get(b["type"], "#6b6b6b")}">'
-        f'<div class="tag">{"" if "aside" in b else "<b>" + str(b["order"]) + "</b>"}{name(b["type"])}</div>'
-        + (f'<div>{_table_html(b, captions)}</div></div>' if "table" in b else
-           f'<div class="txt" lang="ar">{html.escape(b["text"]) or "&nbsp;"}</div></div>')
-        for b in master["blocks"] if b["type"] != "noise" and "caption_of" not in b)
-    legend = "".join(f'<span><i style="background:{COLORS[t]}"></i>{name(t)} · {counts[t]}</span>' for t in used)
+    doc, at = [], None
+    for b in master["blocks"]:
+        if b["type"] == "noise" or "caption_of" in b:
+            continue
+        p = b["parts"][0]["page"] if b["parts"] else at
+        if p is not None and (at is None or p > at):  # a marker where the text reaches a new scan page
+            doc += [None, f'<p class="dpg" id="d{p}">page {p}</p>']; at = p
+        d = _dir(b["text"])
+        doc.append((b, p) if b["type"] == "figure" and "aside" not in b else None)
+        doc.append(
+            f'<div class="blk {b["type"]}{" aside" if "aside" in b else ""}" data-b="{b["id"]}" style="--c:{COLORS.get(b["type"], "#6b6b6b")}">'
+            f'<div class="tag">{"" if "aside" in b else "<b>" + str(b["order"]) + "</b>"}{name(b["type"])}</div>'
+            + (f'<div>{_table_html(b, captions)}</div></div>' if "table" in b else
+               f'<div class="txt" dir="{d}" lang="{"ar" if d == "rtl" else "en"}">{spans.get(b["id"]) or html.escape(b["text"]) or "&nbsp;"}</div></div>'))
+    doc = "".join(_fold_figures(doc))
+    nums = [p["number"] for p in master["pages"]]
+    nav = ('<div class="nav">Go to page: ' + "".join(f'<a data-p="{n}">{n}</a>' for n in nums) + "</div>") if len(nums) > 2 else ""
+    legend = "".join(f'<span><i style="background:{COLORS.get(t, "#6b6b6b")}"></i>{name(t)} · {counts[t]}</span>' for t in used)
     speed = f" Parsed in {seconds:.0f} seconds ({seconds / max(len(images), 1):.1f} a page) on this machine's CPU." if seconds else ""
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{master['id']} · parsed locally</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@500;700&display=swap"><style>{_CSS}</style></head><body>
 <header><h1>{master['id']} <span>· whole document, {len(images)} pages · parsed locally</span></h1>
 <div class="by">Text: {html.escape(master['made_by']['text'])}. Structure: {html.escape(master['made_by']['structure'])}{speed}</div>
-<div class="legend">{legend}</div></header>
+<div class="legend">{legend}</div>{nav}</header>
 <main><div class="pane"><p class="cap">The scan, with every block boxed and numbered in reading order</p>{scans}</div>
 <div class="pane"><p class="cap">Parsed document</p><div class="doc">{doc}</div></div></main>
 <script>{_JS}</script></body></html>"""

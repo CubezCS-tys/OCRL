@@ -33,7 +33,8 @@ ap.add_argument("--pack", default="data/pack.json.gz"); ap.add_argument("--gemin
 ap.add_argument("--base", default="data/structure_v2.pt"); ap.add_argument("--v3", default="data/structure_v3.pt")
 ap.add_argument("--epochs", type=int, default=16); ap.add_argument("--batch", type=int, default=24); ap.add_argument("--lr", type=float, default=4e-4)
 ap.add_argument("--fraction", type=float, default=1.0, help="share of the training documents (learning curve)")
-ap.add_argument("--sets", default="bulk,desk", help="which Haiku sets to train on")
+ap.add_argument("--sets", default="bulk,desk,fresh", help="which Haiku sets to train on")
+ap.add_argument("--fresh-fraction", type=float, default=1.0, help="share of the new-journal documents to train on (learning curve in journals)")
 ap.add_argument("--start-weight", type=float, default=1.0); ap.add_argument("--type-power", type=float, default=0.3); ap.add_argument("--type-cap", type=float, default=6.0)
 ap.add_argument("--select", default="types", choices=["types", "both"], help="best epoch by held-out line types, or by types + exact blocks")
 ap.add_argument("--pretrain-only", action="store_true", help="train on the cleaned Gemini pages only (no Haiku pages)")
@@ -83,7 +84,8 @@ def with_answer(f, ans):
 # --- the Haiku pages: held-out documents only from those the bulk set never had
 pages = [p for p in pack["haiku"] if len(p["lines"])]
 bulk_docs = {p["doc"] for p in pages if "bulk" in p}
-cand = sorted({p["doc"] for p in pages} - bulk_docs)
+has_fresh = any("fresh" in p for p in pages)
+cand = sorted({p["doc"] for p in pages if "fresh" in p}) if has_fresh else sorted({p["doc"] for p in pages} - bulk_docs)  # unseen journals, when there are any
 per_doc = Counter(p["doc"] for p in pages)
 held, n = set(), 0
 for d in np.random.default_rng(7).permutation(cand):
@@ -94,12 +96,15 @@ train_all, val = [], []
 for p in pages:
     f = features(p)
     if p["doc"] in held:
-        val.append(with_answer(f, p["desk"]))
+        val.append(with_answer(f, p["fresh"] if has_fresh else p["desk"]))
     else:
         ans = next((p[s] for s in sets if s in p), None)  # a page in both sets: the bulk answer (as v3 saw it)
         if ans is not None: train_all.append(with_answer(f, ans))
 tdocs = sorted({f["doc"] for f in train_all})
 keep = set(rng.permutation(tdocs)[: max(int(round(a.fraction * len(tdocs))), 1)])
+if a.fresh_fraction < 1.0:  # learning curve over the new journals: all the old pages, a share of the new documents (one per journal)
+    newd = sorted({p["doc"] for p in pages if "fresh" in p} - held)
+    keep = (set(tdocs) - set(newd)) | set(np.random.default_rng(5).permutation(newd)[: int(round(a.fresh_fraction * len(newd)))])
 train = [f for f in train_all if f["doc"] in keep] if not a.pretrain_only else []
 json.dump(sorted(held), open(f"out/{a.name}.held_docs.json", "w"))
 
