@@ -44,7 +44,7 @@ code { font:13px ui-monospace,monospace; }
 
 <section>
   <h2>Reading: how often a character is wrong</h2>
-  <p>Measured on 770 lines that people read blind in inkscript experiment 103, so the truth does not come from Azure. Vowel marks are ignored for every reader alike.</p>
+  <p>Measured on 770 lines from inkscript experiment 103, where two readers typed each line from its image without knowing which system had proposed which reading, and a third settled their differences. So the truth is not Azure's text. Vowel marks are ignored for every reader alike.</p>
   <div class="tiles">
     <div class="tile"><div class="who">Azure</div><div class="big">1.85%</div><div class="sub">426 of 770 lines exactly right</div></div>
     <div class="tile best"><div class="who">The owner's 8.4M reader</div><div class="big">1.37%</div><div class="sub">502 of 770 lines exactly right</div></div>
@@ -57,7 +57,7 @@ code { font:13px ui-monospace,monospace; }
     <tr><td>Printed from 2000 on</td><td class="n">1.01%</td><td class="n">0.60%</td><td class="n">0.93%</td></tr>
     <tr><td>20,000 lines from 121 held-out journals, difference from Azure's text</td><td class="n">n/a</td><td class="n">0.41%</td><td class="n">0.31%</td></tr>
   </table>
-  <p class="note">Both line readers are the same network (convolutions, a two-layer LSTM, CTC; 8 million weights). The owner's was trained on 2.74 million Azure-confident lines; OCRL's on 1.17 million, in about 50 minutes, stopping one pass short because of a bug in the schedule. The blind lines come from the owner's development documents, which their reader may have seen in training.</p>
+  <p class="note">Both line readers are the same network (convolutions, a two-layer LSTM, CTC; 8 million weights). The owner's was trained on 2.74 million Azure-confident lines; OCRL's on 1.17 million, in about 50 minutes, stopping one pass short because of a bug in the schedule. The lines come from the owner's development documents, which their reader may have seen in training. The experiment's files do not say whether its three readers were people or vision models; their notes read like a model's, so treat this truth as model-read until shown otherwise. The readers were shown Azure's reading as one candidate and never the owner's reader's, which if anything favours Azure.</p>
 </section>
 
 <section>
@@ -90,7 +90,7 @@ code { font:13px ui-monospace,monospace; }
 
 <section>
   <h2>Structure: what each line is, and how lines form blocks</h2>
-  <p>Scored with inkscript_v2's own <code>compare()</code> against the three hand-keyed development documents, and against the Gemini-made reference for the 27-page article. Fully local: the lines, the text and the types all come from OCRL.</p>
+  <p>Scored with inkscript_v2's own <code>compare()</code> against the three development documents that have keys, and against the Gemini-made reference for the 27-page article. Those three keys were written by Claude from the page images in the inkscript_v2 project, not by a person, so every figure here is agreement with a strong model's reading of the page. Fully local: the lines, the text and the types all come from OCRL.</p>
   <table>
     <tr><th>Document</th><th class="n">Line types</th><th class="n">Blocks exactly right</th><th class="n">Reading order</th></tr>
     <tr><td>0073, journal pages with tables</td><td class="n">97.0%</td><td class="n">85.7%</td><td class="n">100%</td></tr>
@@ -122,7 +122,7 @@ code { font:13px ui-monospace,monospace; }
     <li><b>English and mixed pages</b> are ordered right to left like Arabic ones.</li>
     <li><b>Magazine layouts</b>: the structure model has never seen pull quotes or standfirsts.</li>
     <li><b>Vowelled text, handwriting, forms</b> are out of scope so far.</li>
-    <li><b>Truth to develop against</b>: three hand-keyed documents is too few. A first census of 74,947 pages from 1,520 journals (made from Azure's boxes alone) groups pages into 14 kinds; about a fifth of pages are kinds the parser is weak on. Seventy pages, five of each kind, are drafted and waiting to be corrected.</li>
+    <li><b>Truth to develop against</b>: three keyed documents is too few, and no structure key was made or checked by a person. A first census of 74,947 pages from 1,520 journals (made from Azure's boxes alone) groups pages into 14 kinds; about a fifth of pages are kinds the parser is weak on. Seventy pages, five of each kind, are drafted. Given the same scan, lines and a two-page guide, Opus, Sonnet and Haiku reproduce the three existing keys at 100%, 99% and 99% of line types and 98%, 97% and 91% of blocks, so model labelling is consistent with the target; it has not been checked against a different model family or a person.</li>
   </ul>
 </section>
 
