@@ -94,6 +94,8 @@ qwen_setup() {   # whatever of venv, model and adapter is missing; prints how lo
 }
 
 qwen_start() {   # start vLLM with the adapter; sets QPID and QPORT
+  # vLLM compiles a small kernel at start and needs a C compiler; a fresh machine image has none.
+  rsh "which gcc > /dev/null 2>&1 || (export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq gcc g++ > /dev/null 2>&1)"
   QPORT=$(rsh "python3 -c \"
 import socket
 for p in range(8000, 8050):
