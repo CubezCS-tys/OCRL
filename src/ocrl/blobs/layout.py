@@ -45,10 +45,12 @@ def binarize(gray: np.ndarray) -> np.ndarray:
     return ink
 
 
-def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.ndarray | None = None) -> Layout:
+def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.ndarray | None = None,
+            hint_rank: np.ndarray | None = None) -> Layout:
     """`hints`: line boxes [n, 4] (x0, y0, x1, y1, this image's pixels) from the trained line finder.
     With them, which line a letter belongs to is taken from the hint it sits in; without them, lines
-    are chained from the letters' vertical overlap."""
+    are chained from the letters' vertical overlap. `hint_rank`: each hint's place in reading order; with
+    it the lines come out in that order, not simply top to bottom (two columns side by side in one image)."""
     ink = binarize(gray)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
     boxes = np.stack(
@@ -75,9 +77,14 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
         # A blob is a letter of a hinted line if its centre is inside the hint and it is a fair share of the
         # line's height. The hint decides the line; overlap chaining only handles what no hint covers.
         cx, cy = (boxes[:, 0] + boxes[:, 2]) / 2, (boxes[:, 1] + boxes[:, 3]) / 2
-        inside = (cx[:, None] >= hints[None, :, 0] - 2) & (cx[:, None] <= hints[None, :, 2] + 2) & (cy[:, None] >= hints[None, :, 1]) & (cy[:, None] <= hints[None, :, 3])
+        # The finder marks a line's core, which can stop short of the line's last word. A letter level with
+        # a hint and within a line-height and a half of its end still belongs to it; where two hints could
+        # claim a letter (table cells in a row), the nearer end wins.
+        reach = 1.5 * (hints[:, 3] - hints[:, 1])
+        beside = np.maximum(np.maximum(hints[None, :, 0] - cx[:, None], cx[:, None] - hints[None, :, 2]), 0)
+        inside = (beside <= reach[None, :]) & (cy[:, None] >= hints[None, :, 1]) & (cy[:, None] <= hints[None, :, 3])
         mid = (hints[:, 1] + hints[:, 3]) / 2
-        off = np.where(inside, np.abs(cy[:, None] - mid[None, :]), np.inf)
+        off = np.where(inside, beside * 1000 + np.abs(cy[:, None] - mid[None, :]), np.inf)
         which = np.where(np.isfinite(off.min(axis=1)), off.argmin(axis=1), -1)
         hh = np.where(which >= 0, (hints[:, 3] - hints[:, 1])[np.maximum(which, 0)], np.inf)
         hinted = live & (which >= 0) & (h >= 0.3 * hh)
@@ -93,6 +100,8 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
             _, seed_line = np.unique(seed_line, return_inverse=True)
             seed_line = seed_line.astype(np.int32)
     else:
+        seeds = np.zeros(0, np.int64)
+    if len(seeds) == 0:  # no hints, or hints that hold nothing letter-sized: chain by overlap
         seeds = np.flatnonzero(live & (h >= 0.45 * tall))
         seed_line = _chain(boxes[seeds], tall)
     n_lines = int(seed_line.max()) + 1 if len(seeds) else 0
@@ -114,8 +123,22 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
         scale[l] = max(float(baseline[l] - np.percentile(tops, 10)), stroke)
     scale = np.where(scale < 0.5 * np.median(scale), np.median(scale), scale)
 
-    # Top-to-bottom line order.
+    # Line order: top to bottom, or the reading order handed in with the hints. A line no hint covers
+    # goes right after the hinted line nearest above it.
     order = np.argsort(baseline)
+    if hint_rank is not None and hints is not None and len(hints) and n_lines:
+        hint_of = np.full(n_lines, -1)
+        hinted_seed = hinted[seeds] if len(seeds) else np.zeros(0, bool)
+        hint_of[seed_line[hinted_seed]] = which[seeds[hinted_seed]]
+        key = np.where(hint_of >= 0, hint_rank[np.maximum(hint_of, 0)].astype(np.float64), np.nan)
+        known = np.flatnonzero(hint_of >= 0)
+        for l in np.flatnonzero(hint_of < 0):
+            if len(known):
+                above = known[baseline[known] <= baseline[l]]
+                key[l] = key[above[np.argmax(baseline[above])]] + 0.5 if len(above) else -1.0
+            else:
+                key[l] = float(baseline[l])
+        order = np.lexsort((baseline, key))
     remap = np.empty(n_lines, np.int32)
     remap[order] = np.arange(n_lines)
     line[seeds] = remap[seed_line]
@@ -126,11 +149,27 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
     small = np.flatnonzero(live & (role != BODY))
     tol = 0.25 * stroke
     col_ink = np.zeros((n_lines, labels.shape[1]), bool)
+    left, right = np.full(n_lines, np.inf), np.full(n_lines, -np.inf)  # how far each line's letters reach
     for s in seeds:
         col_ink[line[s], boxes[s, 0] : boxes[s, 2]] = True
+        left[line[s]] = min(left[line[s]], boxes[s, 0]); right[line[s]] = max(right[line[s]], boxes[s, 2])
+
+    def which_line(x0: int, x1: int, cy: float) -> tuple[int, float]:
+        """The line a small mark belongs to, and how far to the side of that line's letters it lies.
+        Two lines can share a height (two columns, cells of a table row): then the nearer one sideways."""
+        dy = np.abs(baseline - cy)
+        gap = np.maximum(np.maximum(left - x1, x0 - right), 0)
+        level = dy <= 1.5 * scale
+        l = int(np.argmin(np.where(level, gap * 1000 + dy, np.inf))) if level.any() else int(np.argmin(dy))
+        return l, float(gap[l])
+
+    far = 4 * tall  # a mark this far from any letter of its line is a speck in the margin, not part of the line
     for b in small:
         x0, y0, x1, y1 = boxes[b]
-        l = int(np.argmin(np.abs(baseline - (y0 + y1) / 2)))
+        l, gap = which_line(x0, x1, (y0 + y1) / 2)
+        if gap > far:
+            role[b] = NOISE
+            continue
         if y0 <= baseline[l] + tol and y1 - 1 >= baseline[l] - tol:
             if h[b] >= 0.33 * tall or col_ink[l, x0:x1].mean() < 0.3:
                 role[b], line[b] = BODY, l
@@ -141,11 +180,11 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
     #    back to the nearest body ink, counting sideways distance `aniso` times.
     body_lab = np.where(role[labels] == BODY, labels, 0)
     R = int(round(1.2 * tall))
-    sats = np.flatnonzero(live & (role == SAT))
+    sats = np.flatnonzero((role == SAT) & (area >= min_area))
     orphans = []
     for b in sats:
         x0, y0, x1, y1 = boxes[b]
-        l = int(np.argmin(np.abs(baseline - (y0 + y1) / 2)))
+        l, _ = which_line(x0, x1, (y0 + y1) / 2)
         D = int(round(0.9 * scale[l]))
         below = (y0 + y1) / 2 > baseline[l]
         found = 0
@@ -169,7 +208,7 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
         line[b] = line[found]
     for b in orphans:  # nothing nearby to belong to: stands alone
         role[b] = BODY
-        line[b] = int(np.argmin(np.abs(baseline - (boxes[b, 1] + boxes[b, 3]) / 2))) if n_lines else -1
+        line[b] = which_line(boxes[b, 0], boxes[b, 2], (boxes[b, 1] + boxes[b, 3]) / 2)[0] if n_lines else -1
 
     # 5. Reading order: bodies right to left by their right edge.
     lines = []

@@ -39,6 +39,7 @@ class TextLine:
     scale: float  # letter height, pixels
     text: str
     clusters: int
+    order: int = 0  # place in the region's reading order, as the pipeline gave it (rows of a table run sideways)
 
 
 @dataclass
@@ -100,7 +101,7 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
             ids = [b for c in ln.clusters for b in c.blobs]
             bx = res.layout.boxes[ids]
             lines.append(TextLine(number, ri, int(bx[:, 0].min()) + ox, int(bx[:, 1].min()) + oy, int(bx[:, 2].max()) + ox,
-                                  int(bx[:, 3].max()) + oy, ln_geo.baseline + oy, ln_geo.scale, ln.text, len(ln.clusters)))
+                                  int(bx[:, 3].max()) + oy, ln_geo.baseline + oy, ln_geo.scale, ln.text, len(ln.clusters), len(lines)))
     return PageInfo(number, gray.shape[1], gray.shape[0], lines, cols, rules, frames, notes)
 
 
@@ -317,7 +318,7 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
     out: list[Block] = []
     last_flow: Block | None = None  # the last block in the running text, for one that carries on
     for p in infos:
-        ls = sorted(p.lines, key=lambda l: (l.region, l.baseline))
+        ls = sorted(p.lines, key=lambda l: (l.region, l.order))
         if not ls:
             continue
         roles, starts, _ = typer.tag(np.array([[l.x0, l.y0, l.x1, l.y1] for l in ls]), [l.text for l in ls], p.width, p.height)

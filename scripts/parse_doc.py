@@ -18,6 +18,7 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--ckpt", default="out/recognizer_v3.pt")
 ap.add_argument("--pages", default="", help="first-last, e.g. 1-3")
 ap.add_argument("--dpi", type=int, default=300)
+ap.add_argument("--line-reader", default="", help="a line-reader checkpoint; reads whole lines in place of the cluster reader")
 ap.add_argument("--lines", default="", help="a line-finder checkpoint; without it lines are chained by rule")
 ap.add_argument("--typer", default="", help="a structure model checkpoint; without it the hand-written rules type the blocks")
 args = ap.parse_args()
@@ -25,7 +26,7 @@ torch.set_num_threads(12)
 out = Path(args.out); (out / "pages").mkdir(parents=True, exist_ok=True)
 doc_id = Path(args.pdf).stem
 rng = ["-f", args.pages.split("-")[0], "-l", args.pages.split("-")[-1]] if args.pages else []
-subprocess.run(["pdftoppm", "-r", str(args.dpi), "-gray", "-png", *rng, args.pdf, str(out / "pages" / "p")], check=True)
+subprocess.run(["pdftoppm", "-cropbox", "-r", str(args.dpi), "-gray", "-png", *rng, args.pdf, str(out / "pages" / "p")], check=True)
 files = sorted((out / "pages").glob("p-*.png"))
 images = [cv2.imread(str(f), cv2.IMREAD_GRAYSCALE) for f in files]
 t = time.time()
@@ -33,7 +34,7 @@ typer = None
 if args.typer:
     from ocrl.structure.tag import Typer
     typer = Typer(args.typer)
-infos, blocks = parse(OCR(args.ckpt, linefinder=args.lines or None), images, int(args.pages.split("-")[0]) if args.pages else 1, typer)
+infos, blocks = parse(OCR(args.ckpt, linefinder=args.lines or None, line_reader=args.line_reader or None), images, int(args.pages.split("-")[0]) if args.pages else 1, typer)
 how = f"OCRL structure model ({Path(args.typer).stem}), trained on the Desk database, local. Not checked by a person." if typer else ""
 master = to_master(doc_id, infos, blocks, args.dpi, Path(args.ckpt).stem, how)
 secs = time.time() - t

@@ -9,6 +9,7 @@
 #   box.sh wait NAME [MINUTES]    block until NAME is done or failed, then print the end of its log
 #   box.sh log NAME [LINES]       the end of a job's log
 #   box.sh sh 'COMMAND'           run a short command there and print its output
+#   box.sh save                   copy every new model, result file and log back to out/box/ (wait does this itself)
 #   box.sh pull PATH [PATH...]    copy results back into out/box/ on the laptop
 #   box.sh down 'WHAT RAN'        copy /work/out and /work/logs back, destroy the machine, log the cost
 #
@@ -28,7 +29,7 @@ case "$1" in
 up)
   OID=$2; DPH=${3:-0}
   pgrep -f "[v]ast_guard.sh" > /dev/null || { echo "ops/vast_guard.sh is not running; start it first"; exit 1; }
-  ID=$($V create instance $OID --image pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime --disk 60 --ssh --direct --raw | python3 -c "import json,sys; print(json.load(sys.stdin)['new_contract'])")
+  ID=$($V create instance $OID --image pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime --disk ${DISK:-100} --ssh --direct --raw | python3 -c "import json,sys; print(json.load(sys.stdin)['new_contract'])")
   [ -z "$ID" ] && { echo "create failed"; exit 1; }
   T0=$(date +%s); echo "{\"event\": \"start\", \"time\": \"$(date -Is)\", \"instance\": $ID, \"offer\": $OID, \"dph\": $DPH, \"job\": \"workstation\"}" >> $LOG
   printf "ID=%s\nDPH=%s\nT0=%s\n" "$ID" "$DPH" "$T0" > $BOX
@@ -57,7 +58,12 @@ run)
 wait)
   need; M=${3:-60}; T=$(date +%s)
   until rsh "ls /work/logs/$2.done /work/logs/$2.failed 2>/dev/null" | grep -q .; do [ $(( ($(date +%s) - T) / 60 )) -ge $M ] && { echo "still running after $M min"; break; }; sleep 30; done
-  rsh "ls /work/logs/$2.done /work/logs/$2.failed 2>/dev/null; tail -${4:-12} /work/logs/$2.log" ;;
+  rsh "ls /work/logs/$2.done /work/logs/$2.failed 2>/dev/null; tail -${4:-12} /work/logs/$2.log"
+  $0 save ;;
+save)   # results must never live only on the rented machine: it can vanish without warning
+  need; rsh "cd /work && find out logs -maxdepth 2 -type f -size -400M \\( -name '*.pt' -o -name '*.json' -o -name '*.log' \\) -newer /tmp/box_saved 2>/dev/null > /tmp/box_new || find out logs -maxdepth 2 -type f -size -400M \\( -name '*.pt' -o -name '*.json' -o -name '*.log' \\) > /tmp/box_new; touch /tmp/box_saving; tar czf /tmp/box_save.tgz -T /tmp/box_new 2>/dev/null; wc -l < /tmp/box_new" > /tmp/box_save.n
+  if [ "$(tail -1 /tmp/box_save.n)" != "0" ]; then scp -q $SSHO -P $PORT root@$HOST:/tmp/box_save.tgz /tmp/box_save.tgz && tar xzf /tmp/box_save.tgz -C $ROOT/out/box && rsh "mv /tmp/box_saving /tmp/box_saved" && echo "saved to out/box: $(tail -1 /tmp/box_save.n) new files"; fi
+  rm -f /tmp/box_save.tgz /tmp/box_save.n ;;
 log) need; rsh "tail -${3:-12} /work/logs/$2.log; ls /work/logs/$2.done /work/logs/$2.failed 2>/dev/null" ;;
 sh) need; rsh "cd /work && export PYTHONPATH=/work/src && $2" ;;
 pull)

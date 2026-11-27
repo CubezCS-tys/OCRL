@@ -20,6 +20,8 @@ ap.add_argument("--workers", type=int, default=5)
 ap.add_argument("--out", default="out/recognizer.pt")
 ap.add_argument("--resume", default=None)
 ap.add_argument("--eval-every", type=int, default=2000)
+ap.add_argument("--real", default="", help="folder of real-ink shards to mix in")
+ap.add_argument("--real-every", type=int, default=2, help="every n-th batch is real ink")
 ap.add_argument("--width", type=int, default=64)
 ap.add_argument("--hidden", type=int, default=192)
 args = ap.parse_args()
@@ -81,8 +83,28 @@ opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
 sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=args.lr, total_steps=args.steps, pct_start=0.05)
 loader = DataLoader(ClusterStream(CORPUS, batch=args.batch, seed=start), batch_size=None, num_workers=args.workers, prefetch_factor=8)
 
+real = []
+if args.real:
+    import glob
+    from ocrl.recog.realink import load_shard
+    for f in sorted(glob.glob(f"{args.real}/*.pt")):
+        real.extend((c, l) for c, l in load_shard(f) if l and all(ch in VOCAB for ch in l) and c.shape[2] >= 8)
+    print(len(real), "real-ink clusters loaded", flush=True)
+real_rng = np.random.default_rng(start + 7)
+
+
+def real_batch():
+    """Real clusters of similar width, so little is wasted on padding."""
+    pick = real_rng.integers(0, len(real), args.batch * 3)
+    pick = sorted(pick, key=lambda i: real[i][0].shape[2])
+    a = int(real_rng.integers(0, len(pick) - args.batch + 1))
+    return collate([real[i] for i in pick[a : a + args.batch]])
+
+
 t0, run = time.time(), 0.0
 for step, (x, widths, flat, lengths) in enumerate(loader, 1):
+    if real and step % args.real_every == 0:
+        x, widths, flat, lengths = real_batch()
     logp = model(x.to(device).float() / 255)
     loss = F.ctc_loss(logp, flat.to(device), Recognizer.frames(widths), lengths, zero_infinity=True)
     opt.zero_grad(set_to_none=True)

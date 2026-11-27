@@ -24,7 +24,7 @@ def one(args):
         az = json.loads(js.read_text(encoding="utf-8")); az = az.get("analyzeResult", az)
         n = min(len(az["pages"]), max_pages); pages = lines = 0
         with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run(["pdftoppm", "-r", "150", "-gray", "-png", "-l", str(n), str(pdf), f"{tmp}/p"], check=True, stderr=subprocess.DEVNULL, timeout=600)
+            subprocess.run(["pdftoppm", "-cropbox", "-r", "150", "-gray", "-png", "-l", str(n), str(pdf), f"{tmp}/p"], check=True, stderr=subprocess.DEVNULL, timeout=600)
             for pi, f in enumerate(sorted(Path(tmp).glob("p-*.png"))[:n]):
                 pg = az["pages"][pi]
                 if not pg.get("lines"):

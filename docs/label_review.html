@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Correct the draft labels</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=Noto+Naskh+Arabic:wght@500&display=swap">
+<style>
+:root { --bg:#f5f7fa; --surface:#fff; --fg:#151b23; --muted:#586374; --line:#d3d9e2; --accent:#1464c8; --good:#1c7448; --warn:#9a5b00;
+  --display:"Space Grotesk","Segoe UI",system-ui,sans-serif; --body:"Inter","Segoe UI",system-ui,sans-serif; --arabic:"Noto Naskh Arabic","Amiri",serif; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0e1217; --surface:#161b22; --fg:#e5e9ef; --muted:#98a3b3; --line:#2a323e; --accent:#6aa9f0; --good:#62cf9b; --warn:#e0a84a; color-scheme:dark; } }
+* { box-sizing:border-box; }
+html, body { height:100%; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 var(--body); display:flex; flex-direction:column; }
+header { display:flex; flex-wrap:wrap; align-items:center; gap:8px 18px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--surface); }
+h1 { font:600 17px var(--display); margin:0; }
+.grow { flex:1; }
+button { font:500 13px var(--body); color:var(--fg); background:var(--surface); border:1.5px solid var(--line); border-radius:5px; padding:5px 11px; cursor:pointer; }
+button:hover { border-color:var(--muted); } button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+button.primary { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+.meta { color:var(--muted); font-size:13px; }
+.done { color:var(--good); font-weight:600; }
+main { flex:1; min-height:0; display:grid; grid-template-columns:minmax(0,1.25fr) minmax(340px,1fr); }
+.left { overflow:auto; padding:12px; border-right:1px solid var(--line); }
+.sheet { position:relative; width:100%; max-width:980px; margin:0 auto; background:#fff; border:1px solid var(--line); }
+.sheet img { display:block; width:100%; height:auto; }
+.box { position:absolute; border:2px solid; border-radius:2px; cursor:pointer; background:color-mix(in srgb, currentColor 13%, transparent); }
+.box.start { border-top-width:5px; }
+.box.unsure { border-style:dashed; }
+.box.sel { outline:3px solid var(--accent); outline-offset:1px; background:color-mix(in srgb, var(--accent) 25%, transparent); z-index:2; }
+.box .tag { position:absolute; left:0; top:-13px; font:600 9px var(--body); background:currentColor; padding:0 3px; border-radius:2px; white-space:nowrap; pointer-events:none; }
+.box .tag span { color:#fff; }
+.right { display:flex; flex-direction:column; min-height:0; }
+.palette { padding:10px 12px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:5px; background:var(--surface); }
+.palette button { display:flex; align-items:center; gap:6px; padding:3px 8px; font-size:12.5px; }
+.palette i { width:10px; height:10px; border-radius:2px; display:inline-block; }
+.palette kbd { font:600 10.5px ui-monospace,monospace; color:var(--muted); border:1px solid var(--line); border-radius:3px; padding:0 4px; }
+.tools { padding:8px 12px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:6px; align-items:center; background:var(--surface); }
+.help { padding:6px 12px; color:var(--muted); font-size:12.5px; border-bottom:1px solid var(--line); min-height:32px; }
+.rows { flex:1; overflow:auto; padding:6px 8px 40px; }
+.row { display:grid; grid-template-columns:104px minmax(0,1fr); gap:8px; align-items:baseline; padding:2px 6px; border-radius:4px; cursor:pointer; border-left:4px solid transparent; }
+.row.start { margin-top:9px; border-top:1px solid var(--line); padding-top:5px; }
+.row.sel { background:color-mix(in srgb, var(--accent) 16%, transparent); }
+.row .chip { font-size:11.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.row .txt { font:500 16px/1.7 var(--arabic); direction:rtl; text-align:right; unicode-bidi:plaintext; overflow-wrap:anywhere; }
+.row.unsure .chip::after { content:" ?"; color:var(--warn); }
+details { padding:6px 12px; border-bottom:1px solid var(--line); font-size:12.5px; color:var(--muted); background:var(--surface); }
+details ul { margin:6px 0 2px; padding-left:18px; display:flex; flex-direction:column; gap:3px; }
+@media (max-width: 900px) { main { grid-template-columns:1fr; } .left { border-right:0; max-height:55vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Correct the draft labels</h1>
+  <span class="meta" id="where"></span>
+  <span class="meta" id="progress"></span>
+  <span class="grow"></span>
+  <button id="prev">Previous page</button>
+  <button id="next">Next page</button>
+  <button id="check" class="primary">Page is right (Enter)</button>
+  <button id="export">Save my corrections to a file</button>
+</header>
+<main>
+  <div class="left"><div class="sheet" id="sheet"></div></div>
+  <div class="right">
+    <details>
+      <summary>How this works</summary>
+      <ul>
+        <li>Every line Azure found has a draft label from our structure model. A thick top edge marks where a block begins. A dashed box or a "?" means the model was unsure.</li>
+        <li>Click a line (on the page or in the list). Shift-click selects a run of lines. Arrow keys move up and down.</li>
+        <li>Press a type's letter, or click its button, to relabel the selected lines.</li>
+        <li>Press <b>B</b> to switch "a block begins here" on or off for the selected line. Press <b>M</b> to make the selected lines one block.</li>
+        <li>When the page is right, press <b>Enter</b>. Your work is kept in this browser as you go; "Save my corrections to a file" writes it out.</li>
+      </ul>
+    </details>
+    <div class="palette" id="palette"></div>
+    <div class="tools">
+      <button id="bstart">Block begins here (B)</button>
+      <button id="merge">Make selection one block (M)</button>
+      <button id="unsure">Next unsure line (/)</button>
+      <button id="reset">Back to the draft for this page</button>
+    </div>
+    <div class="help" id="help"></div>
+    <div class="rows" id="rows"></div>
+  </div>
+</main>
+<script src="dev_data.js"></script>
+<script>
+const KEY = "ocrl-dev-labels-v1";
+const T = Object.fromEntries(DEV.types.map(t => [t.id, t]));
+const HOT = Object.fromEntries(DEV.types.filter(t => t.key).map(t => [t.key, t.id]));
+let saved = {};
+try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { saved = {}; }
+let pi = Math.max(DEV.pages.findIndex(p => !(saved[p.id] && saved[p.id].checked)), 0);
+let sel = [0], anchor = 0;
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const page = () => DEV.pages[pi];
+function state() {  // this page's labels: the saved ones, or a copy of the draft
+  const p = page();
+  if (!saved[p.id]) saved[p.id] = { checked: false, lines: p.lines.map(l => ({ type: l.type, start: l.start })) };
+  return saved[p.id];
+}
+function store() { try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch (e) {} }
+function render() {
+  const p = page(), s = state();
+  const nDone = DEV.pages.filter(q => saved[q.id] && saved[q.id].checked).length;
+  $("where").textContent = `Page ${pi + 1} of ${DEV.pages.length} · ${p.kind} · ${p.stem} p${p.page}`;
+  $("progress").innerHTML = (s.checked ? '<span class="done">checked</span> · ' : "") + `${nDone} of ${DEV.pages.length} pages checked`;
+  $("sheet").innerHTML = `<img alt="Scan of the page" src="${p.img}">` + p.lines.map((l, i) => {
+    const t = T[s.lines[i].type];
+    return `<div class="box ${s.lines[i].start ? "start" : ""} ${l.sure ? "" : "unsure"} ${sel.includes(i) ? "sel" : ""}" data-i="${i}" title="${esc(t.name)}"
+      style="color:${t.color};left:${100 * l.b[0]}%;top:${100 * l.b[1]}%;width:${100 * (l.b[2] - l.b[0])}%;height:${100 * (l.b[3] - l.b[1])}%">${s.lines[i].start ? `<span class="tag"><span>${esc(t.name)}</span></span>` : ""}</div>`;
+  }).join("");
+  $("rows").innerHTML = p.lines.map((l, i) => {
+    const t = T[s.lines[i].type];
+    return `<div class="row ${s.lines[i].start ? "start" : ""} ${l.sure ? "" : "unsure"} ${sel.includes(i) ? "sel" : ""}" data-i="${i}" style="border-left-color:${t.color}">
+      <span class="chip" style="color:${t.color}">${s.lines[i].start ? esc(t.name) : ""}</span><span class="txt">${esc(l.t)}</span></div>`;
+  }).join("");
+  const first = s.lines[sel[0]];
+  $("help").textContent = first ? `${T[first.type].name}: ${T[first.type].help}` : "";
+}
+function show(i) {  // bring the selected line into view in both panes
+  const a = document.querySelector(`.row[data-i="${i}"]`), b = document.querySelector(`.box[data-i="${i}"]`);
+  if (a) a.scrollIntoView({ block: "nearest" }); if (b) b.scrollIntoView({ block: "nearest" });
+}
+function pick(i, extend) {
+  const n = page().lines.length; i = Math.max(0, Math.min(n - 1, i));
+  if (extend) { const a = Math.min(anchor, i), b = Math.max(anchor, i); sel = Array.from({ length: b - a + 1 }, (_, k) => a + k); }
+  else { sel = [i]; anchor = i; }
+  render(); show(i);
+}
+function setType(id) {
+  const s = state(); sel.forEach(i => s.lines[i].type = id);
+  // a line whose type differs from the line above cannot be the same block
+  sel.concat([Math.max(...sel) + 1]).forEach(i => { if (i > 0 && i < s.lines.length && s.lines[i].type !== s.lines[i - 1].type) s.lines[i].start = true; });
+  s.checked = false; store(); render();
+}
+function toggleStart() { const s = state(), i = Math.min(...sel); if (i > 0) { s.lines[i].start = !s.lines[i].start; s.checked = false; store(); render(); } }
+function merge() {
+  const s = state(), a = Math.min(...sel), b = Math.max(...sel);
+  for (let i = a + 1; i <= b; i++) { s.lines[i].start = false; s.lines[i].type = s.lines[a].type; }
+  s.lines[a].start = true; if (b + 1 < s.lines.length) s.lines[b + 1].start = true;
+  s.checked = false; store(); render();
+}
+function go(d) { pi = Math.max(0, Math.min(DEV.pages.length - 1, pi + d)); sel = [0]; anchor = 0; render(); document.querySelector(".left").scrollTop = 0; $("rows").scrollTop = 0; }
+function nextUnsure() {
+  const p = page(), from = Math.max(...sel);
+  const i = p.lines.findIndex((l, k) => k > from && !l.sure);
+  if (i >= 0) pick(i, false); else $("help").textContent = "No more unsure lines on this page.";
+}
+$("palette").innerHTML = DEV.types.map(t => `<button data-t="${t.id}" title="${esc(t.help)}"><i style="background:${t.color}"></i>${esc(t.name)}${t.key ? `<kbd>${t.key.toUpperCase()}</kbd>` : ""}</button>`).join("");
+$("palette").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setType(b.dataset.t); });
+for (const id of ["sheet", "rows"]) $(id).addEventListener("click", e => { const el = e.target.closest("[data-i]"); if (el) pick(+el.dataset.i, e.shiftKey); });
+$("prev").onclick = () => go(-1); $("next").onclick = () => go(1);
+$("check").onclick = () => { state().checked = true; store(); if (pi < DEV.pages.length - 1) go(1); else render(); };
+$("bstart").onclick = toggleStart; $("merge").onclick = merge; $("unsure").onclick = nextUnsure;
+$("reset").onclick = () => { delete saved[page().id]; store(); render(); };
+$("export").onclick = () => {
+  const out = { made: new Date().toISOString(), pages: DEV.pages.map(p => ({ id: p.id, stem: p.stem, page: p.page, kind: p.kind, checked: !!(saved[p.id] && saved[p.id].checked),
+    lines: (saved[p.id] ? saved[p.id].lines : p.lines).map((l, i) => ({ type: l.type, start: l.start, draft_type: p.lines[i].type, draft_start: p.lines[i].start })) })) };
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: "application/json" })); a.download = "ocrl_dev_labels.json"; a.click();
+};
+document.addEventListener("keydown", e => {
+  if (e.target.closest("input, textarea") || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase(), last = e.shiftKey ? (sel[0] === anchor ? sel[sel.length - 1] : sel[0]) : sel[sel.length - 1];
+  if (e.key === "ArrowDown") { pick((e.shiftKey ? last : Math.max(...sel)) + 1, e.shiftKey); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { pick((e.shiftKey ? last : Math.min(...sel)) - 1, e.shiftKey); e.preventDefault(); }
+  else if (e.key === "Enter") { $("check").click(); e.preventDefault(); }
+  else if (k === "b") toggleStart();
+  else if (k === "m") merge();
+  else if (k === "/") { nextUnsure(); e.preventDefault(); }
+  else if (e.key === "ArrowRight") go(1); else if (e.key === "ArrowLeft") go(-1);
+  else if (HOT[k]) setType(HOT[k]);
+});
+render();
+</script>
+</body>
+</html>

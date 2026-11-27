@@ -33,7 +33,7 @@ def one_document(args):
         rng = np.random.default_rng([seed, abs(hash(stem)) % (2**31)])
         with tempfile.TemporaryDirectory() as tmp:
             n = min(len(az["pages"]), max_pages)
-            subprocess.run(["pdftoppm", "-r", "300", "-gray", "-png", "-l", str(n), str(pdf), f"{tmp}/p"], check=True,
+            subprocess.run(["pdftoppm", "-cropbox", "-r", "300", "-gray", "-png", "-l", str(n), str(pdf), f"{tmp}/p"], check=True,
                            stderr=subprocess.DEVNULL, timeout=600)
             for pi, f in enumerate(sorted(Path(tmp).glob("p-*.png"))[:n]):
                 gray = cv2.imread(str(f), cv2.IMREAD_GRAYSCALE)

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCRL: where the local parser stands, 27 November 2026</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+:root { --bg:#f5f7fa; --surface:#fff; --fg:#151b23; --muted:#586374; --line:#d3d9e2; --azure:#1464c8; --good:#1c7448; --bad:#b3261e; --warn:#9a5b00; --old:#8a94a3;
+  --display:"Space Grotesk","Segoe UI",system-ui,sans-serif; --body:"Inter","Segoe UI",system-ui,sans-serif; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0e1217; --surface:#161b22; --fg:#e5e9ef; --muted:#98a3b3; --line:#2a323e; --azure:#6aa9f0; --good:#62cf9b; --bad:#f28b82; --warn:#e0a84a; --old:#6c7786; color-scheme:dark; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 var(--body); }
+main { max-width:980px; margin:0 auto; padding:36px 20px 80px; display:flex; flex-direction:column; gap:36px; }
+h1,h2 { font-family:var(--display); font-weight:600; margin:0; text-wrap:balance; }
+h1 { font-size:29px; line-height:1.15; } h2 { font-size:20px; }
+p { margin:0; max-width:72ch; } .lede { color:var(--muted); font-size:16px; }
+section { display:flex; flex-direction:column; gap:14px; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+.tile { background:var(--surface); border:1.5px solid var(--line); border-radius:5px; padding:14px 16px; display:flex; flex-direction:column; gap:2px; }
+.tile .who { font-size:12px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); }
+.tile .big { font:600 32px/1.15 var(--display); font-variant-numeric:tabular-nums; } .tile .sub { color:var(--muted); font-size:13.5px; }
+.tile.best { border-color:var(--good); } .tile.best .big { color:var(--good); }
+figure { margin:0; background:var(--surface); border:1px solid var(--line); border-radius:5px; padding:16px; display:flex; flex-direction:column; gap:12px; }
+figcaption { color:var(--muted); font-size:13.5px; max-width:80ch; }
+.bars { display:grid; grid-template-columns:max-content minmax(0,1fr) max-content; gap:8px 12px; align-items:center; font-size:14px; }
+.bars .t { height:16px; } .bars .b { height:100%; border-radius:0 4px 4px 0; min-width:2px; background:var(--azure); }
+.bars .v { font-weight:600; font-variant-numeric:tabular-nums; text-align:right; }
+.b.good { background:var(--good); } .b.old { background:var(--old); } .b.bad { background:var(--bad); }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+th,td { text-align:left; padding:6px 12px 6px 0; border-top:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:500; font-size:12.5px; } td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; max-width:72ch; }
+.note { border-left:3px solid var(--warn); padding:2px 0 2px 12px; color:var(--muted); }
+code { font:13px ui-monospace,monospace; }
+</style>
+</head>
+<body>
+<main>
+<header style="display:flex;flex-direction:column;gap:12px">
+  <h1>Where the local parser stands</h1>
+  <p class="lede">27 November 2026, after the first long working night. A scanned page now goes in and a typed, ordered document comes out with no Azure and no Gemini in the loop: a trained line finder, a line reader, and a structure model, on top of the ink-blob layout. This page records what was measured, on what, and what is still weak.</p>
+</header>
+
+<section>
+  <h2>Reading: how often a character is wrong</h2>
+  <p>Measured on 770 lines that people read blind in inkscript experiment 103, so the truth does not come from Azure. Vowel marks are ignored for every reader alike.</p>
+  <div class="tiles">
+    <div class="tile"><div class="who">Azure</div><div class="big">1.85%</div><div class="sub">426 of 770 lines exactly right</div></div>
+    <div class="tile best"><div class="who">The owner's 8.4M reader</div><div class="big">1.37%</div><div class="sub">502 of 770 lines exactly right</div></div>
+    <div class="tile"><div class="who">OCRL line reader, trained tonight</div><div class="big">1.86%</div><div class="sub">436 of 770 lines exactly right</div></div>
+    <div class="tile"><div class="who">OCRL cluster reader (before)</div><div class="big">12.22%</div><div class="sub">121 of 770 lines exactly right</div></div>
+  </div>
+  <table>
+    <tr><th>Lines</th><th class="n">Azure</th><th class="n">Owner's reader</th><th class="n">OCRL line reader</th></tr>
+    <tr><td>Printed before 2000</td><td class="n">3.43%</td><td class="n">2.32%</td><td class="n">3.01%</td></tr>
+    <tr><td>Printed from 2000 on</td><td class="n">1.01%</td><td class="n">0.60%</td><td class="n">0.93%</td></tr>
+    <tr><td>20,000 lines from 121 held-out journals, difference from Azure's text</td><td class="n">n/a</td><td class="n">0.41%</td><td class="n">0.31%</td></tr>
+  </table>
+  <p class="note">Both line readers are the same network (convolutions, a two-layer LSTM, CTC; 8 million weights). The owner's was trained on 2.74 million Azure-confident lines; OCRL's on 1.17 million, in about 50 minutes, stopping one pass short because of a bug in the schedule. The blind lines come from the owner's development documents, which their reader may have seen in training.</p>
+</section>
+
+<section>
+  <h2>Finding lines, on 50 documents the line finder never saw</h2>
+  <figure>
+    <div class="bars">
+      <span>Trained line finder, when first plugged in</span><div class="t"><div class="b old" style="width:84.8%"></div></div><span class="v">84.8%</span>
+      <span>Rule-based lines, with tonight's fixes</span><div class="t"><div class="b old" style="width:85.6%"></div></div><span class="v">85.6%</span>
+      <span>Trained line finder, frozen pipeline</span><div class="t"><div class="b good" style="width:95.2%"></div></div><span class="v">95.2%</span>
+    </div>
+    <figcaption>Share of Azure's lines matched by exactly one line of ours, 18,799 lines. In the frozen pipeline those lines hold 97.1% of the characters, and 94.1% of steps from one matched line to the next go forward in our reading order as they do in Azure's. The line finder alone, scored on its own held-out pages, finds 98.2% of lines.</figcaption>
+  </figure>
+  <p>On 100 further documents, from journals neither the line finder nor OCRL's reader was fitted on: 92.3% of lines one-to-one, holding 96.5% of the characters; reading order 96.1%.</p>
+</section>
+
+<section>
+  <h2>The whole pipeline: scan in, text out, compared with Azure's text</h2>
+  <figure>
+    <div class="bars">
+      <span>Midnight: rule-based lines, cluster reader</span><div class="t"><div class="b old" style="width:100%"></div></div><span class="v">17.0%</span>
+      <span>Owner's reader plugged in</span><div class="t"><div class="b old" style="width:86.2%"></div></div><span class="v">14.7%</span>
+      <span>Text-direction fix</span><div class="t"><div class="b old" style="width:55.7%"></div></div><span class="v">9.5%</span>
+      <span>Frozen: line finder, cleaning, region fixes</span><div class="t"><div class="b good" style="width:25.6%"></div></div><span class="v">4.35%</span>
+      <span>Frozen, with OCRL's own line reader</span><div class="t"><div class="b good" style="width:23.4%"></div></div><span class="v">3.97%</span>
+    </div>
+    <figcaption>Characters differing from Azure's reading, 50 unseen documents, 10,911 lines. Shorter is closer to Azure, which is not the same as more correct: OCRL's reader learned from Azure and so agrees with it more. In the frozen pipeline the median document differs by 2.7%, and on 2.6% of Azure's lines we read nothing.</figcaption>
+  </figure>
+  <p>On the 100 further documents: 4.00% of characters differ, median document 2.3%, nothing read on 5.6% of lines.</p>
+</section>
+
+<section>
+  <h2>Structure: what each line is, and how lines form blocks</h2>
+  <p>Scored with inkscript_v2's own <code>compare()</code> against the three hand-keyed development documents, and against the Gemini-made reference for the 27-page article. Fully local: the lines, the text and the types all come from OCRL.</p>
+  <table>
+    <tr><th>Document</th><th class="n">Line types</th><th class="n">Blocks exactly right</th><th class="n">Reading order</th></tr>
+    <tr><td>0073, journal pages with tables</td><td class="n">97.0%</td><td class="n">85.7%</td><td class="n">100%</td></tr>
+    <tr><td>0175, thesis abstract in three columns</td><td class="n">83.3%</td><td class="n">67.9%</td><td class="n">98.2%</td></tr>
+    <tr><td>0499, magazine page with photographs</td><td class="n">36.8%</td><td class="n">12.5%</td><td class="n">72.6%</td></tr>
+    <tr><td>0013, 27-page article (Gemini-made reference)</td><td class="n">93.3%</td><td class="n">79.7%</td><td class="n">98.1%</td></tr>
+  </table>
+  <p>The same three documents at the start of the night: 23.9%, 42.5% and 3.5% of line types.</p>
+  <p class="note">These four documents were developed on. They show progress, not expected accuracy. The owner's 12 locked test pages have not been run, by the owner's choice, and stay unseen.</p>
+</section>
+
+<section>
+  <h2>What was wrong, and is fixed</h2>
+  <ul>
+    <li><b>Pages were drawn by the wrong box.</b> Azure measures the visible page (the crop box); we drew the media box, misplacing every line on 45% of documents. All earlier line numbers were redone.</li>
+    <li><b>Photographs were read as ink.</b> They are now found by their grey tones and painted out before any blob is made.</li>
+    <li><b>Table frames were one blob</b> that swallowed every cell. Ruled lines are removed; a rule standing alone still cuts the page into regions.</li>
+    <li><b>The same ink was read twice</b> where a column and a wider footer were joined into one region that overlapped the next column.</li>
+    <li><b>Small marks joined the wrong line</b> when two lines shared a height (two columns, a table row). Marks far from any letter are dropped as margin specks.</li>
+    <li><b>Latin and mixed lines came out in the wrong order</b> from the mirrored line reader.</li>
+    <li><b>List items were called paragraphs.</b> A rule now reads lists off the page: an item opens with a mark and runs to the next mark, a gap, or a line that stops short.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>What is still weak</h2>
+  <ul>
+    <li><b>Tables</b> are found cell by cell but read column by column, not row by row.</li>
+    <li><b>English and mixed pages</b> are ordered right to left like Arabic ones.</li>
+    <li><b>Magazine layouts</b>: the structure model has never seen pull quotes or standfirsts.</li>
+    <li><b>Vowelled text, handwriting, forms</b> are out of scope so far.</li>
+    <li><b>Truth to develop against</b>: three hand-keyed documents is too few. A first census of 74,947 pages from 1,520 journals (made from Azure's boxes alone) groups pages into 14 kinds; about a fifth of pages are kinds the parser is weak on. Seventy pages, five of each kind, are drafted and waiting to be corrected.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Cost</h2>
+  <p>Rented GPU time for everything above: 6.23 dollars. One machine was deleted mid-run by a second safety guard on the same account, losing a trained line finder and the downloads; results are now copied back after every job.</p>
+</section>
+</main>
+</body>
+</html>

@@ -17,25 +17,18 @@ cv2.setNumThreads(1)
 
 from ocrl.blobs.clean import clean_page
 from ocrl.blobs.layout import analyze
-from ocrl.blobs.regions import find_regions
+from ocrl.blobs.regions import plan
 
 
-finder = None
-if args.finder:
-    from ocrl.blobs.linefinder import LineFinder
-    finder = LineFinder(args.finder)
+finder = None  # set from --finder when run as a script
 
 
-def our_lines(gray):
+def our_lines(gray, rules=None):
+    """Our lines' boxes on the page, in our reading order."""
     out = []
     found = finder.lines(gray) if finder is not None else None
-    for r in find_regions(gray):
-        crop = np.pad(gray[r.y0 : r.y1, r.x0 : r.x1], 16, constant_values=255)
-        hints = None
-        if found is not None and len(found):
-            cx, cy = (found[:, 0] + found[:, 2]) / 2, (found[:, 1] + found[:, 3]) / 2
-            hints = found[(cx >= r.x0) & (cx <= r.x1) & (cy >= r.y0) & (cy <= r.y1)] - np.array([r.x0 - 16, r.y0 - 16, r.x0 - 16, r.y0 - 16], np.float32)
-        lay = analyze(crop, hints=hints)
+    for r, crop, hints, rank in plan(gray, rules, found, pad=16):
+        lay = analyze(crop, hints=hints, hint_rank=rank)
         sats = lay.satellites()
         for ln in lay.lines:
             ids = [b for body in ln.bodies for b in [body] + sats.get(body, [])]
@@ -62,9 +55,10 @@ def score_page(job):
     path, pg, clean = job
     gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     sx, sy = gray.shape[1] / pg["width"], gray.shape[0] / pg["height"]
+    rules = None
     if clean:
-        gray = clean_page(gray).gray
-    ours = our_lines(gray)
+        cleaned = clean_page(gray); gray, rules = cleaned.gray, cleaned.rules
+    ours = our_lines(gray, rules)
     c = Counter(pages=1, our_lines=len(ours))
     for ln in pg.get("lines", []):
         p = ln["polygon"]
@@ -88,12 +82,15 @@ if __name__ == "__main__":
     ap.add_argument("--samples", default="/home/yassine/inkscript_v2/data/samples")
     ap.add_argument("--docs", nargs="+", required=True)
     ap.add_argument("--clean", action="store_true")
-ap.add_argument("--finder", default="", help="a line-finder checkpoint")
+    ap.add_argument("--finder", default="", help="a line-finder checkpoint")
     ap.add_argument("--max-pages", type=int, default=12)
     ap.add_argument("--cache", default="out/line_recall_pages")
     ap.add_argument("--why", action="store_true", help="say what went wrong with the lines not found well")
     ap.add_argument("--workers", type=int, default=4)
     args = ap.parse_args()
+    if args.finder:
+        from ocrl.blobs.linefinder import LineFinder
+        finder = LineFinder(args.finder)
     total = Counter()
     with ProcessPoolExecutor(args.workers) as pool:
         for doc in args.docs:

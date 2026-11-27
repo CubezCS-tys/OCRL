@@ -20,21 +20,24 @@ print(len(train), "training pages,", len(held), "held-out pages", flush=True)
 
 
 def sample():
-    xs, ys = [], []
-    for _ in range(a.batch):
+    """One batch. Only the cutting is done on the processor; exposure, grain and tint are applied on the
+    GPU, which is what lets the GPU stay busy (the processor used to spend most of each step drawing noise)."""
+    c = a.crop
+    xs, ys = np.full((a.batch, c, c), 255, np.uint8), np.zeros((a.batch, c, c), np.uint8)
+    for k in range(a.batch):
         img, mask, _ = train[int(rng.integers(len(train)))]
-        H, W = img.shape; c = a.crop
+        H, W = img.shape
         y, x = int(rng.integers(0, max(H - c, 1))), int(rng.integers(0, max(W - c, 1)))
-        i, m = img[y : y + c, x : x + c].astype(np.float32), mask[y : y + c, x : x + c]
-        if i.shape != (c, c):
-            i = np.pad(i, ((0, c - i.shape[0]), (0, c - i.shape[1])), constant_values=255); m = np.pad(m, ((0, c - m.shape[0]), (0, c - m.shape[1])))
-        # scans differ in exposure, sharpness and grain
-        if rng.random() < 0.5: i = 255 - (255 - i) * rng.uniform(0.6, 1.3)
+        i, m = img[y : y + c, x : x + c], mask[y : y + c, x : x + c]
         if rng.random() < 0.3: i = cv2.GaussianBlur(i, (0, 0), rng.uniform(0.4, 1.2))
-        if rng.random() < 0.4: i = i + rng.normal(0, rng.uniform(2, 12), i.shape)
-        if rng.random() < 0.3: i = i - rng.uniform(0, 60)  # tinted paper
-        xs.append(np.clip(i, 0, 255) / 255); ys.append(m > 0)
-    return torch.tensor(np.stack(xs), dtype=torch.float32)[:, None].to(dev), torch.tensor(np.stack(ys), dtype=torch.float32)[:, None].to(dev)
+        xs[k, : i.shape[0], : i.shape[1]] = i; ys[k, : m.shape[0], : m.shape[1]] = m
+    x = torch.from_numpy(xs).to(dev).float()[:, None]; y = (torch.from_numpy(ys).to(dev) > 0).float()[:, None]
+    B = (a.batch, 1, 1, 1); r = lambda: torch.rand(B, device=dev)
+    # scans differ in exposure and grain, and some paper is tinted
+    x = torch.where(r() < 0.5, 255 - (255 - x) * (0.6 + 0.7 * r()), x)
+    x = torch.where(r() < 0.4, x + torch.randn_like(x) * (2 + 10 * r()), x)
+    x = torch.where(r() < 0.3, x - 60 * r(), x)
+    return x.clamp(0, 255) / 255, y
 
 
 @torch.no_grad()

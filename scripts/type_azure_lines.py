@@ -17,6 +17,7 @@ ap.add_argument("--typer", required=True)
 ap.add_argument("--name", required=True)
 ap.add_argument("--keys", default=str(V2 / "out"))
 ap.add_argument("--samples", default=str(V2 / "data/samples"))
+ap.add_argument("--starts", default="model", choices=["model", "azure"], help="where a block begins: the structure model's call, or Azure's own paragraphs")
 args = ap.parse_args()
 doc = args.name.split("_p")[0]
 key = json.load(open(Path(args.keys) / f"{args.name}.master.json", encoding="utf-8"))
@@ -32,6 +33,9 @@ for pg in az["pages"]:
     dpi = 300.0  # the model saw pixel boxes at the scan's size; only ratios matter
     boxes = np.array([[min(l["polygon"][0::2]), min(l["polygon"][1::2]), max(l["polygon"][0::2]), max(l["polygon"][1::2])] for l in pg["lines"]]) * dpi
     roles, starts, _ = typer.tag(boxes, [l["content"] for l in pg["lines"]], pg["width"] * dpi, pg["height"] * dpi)
+    if args.starts == "azure":
+        first = {q["spans"][0]["offset"] for q in az.get("paragraphs", [])}
+        starts = np.array([1.0 if l["spans"][0]["offset"] in first else 0.0 for l in pg["lines"]])
     cur = None
     for i, (role, start) in enumerate(zip(roles, starts)):
         kind, ref = TO_TYPE.get(role, "other"), f"{p}:{i}"

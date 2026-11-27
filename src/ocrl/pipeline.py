@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from .blobs.layout import Layout, analyze
-from .blobs.regions import Region, find_regions
+from .blobs.regions import Region, find_regions, plan
 from .recog.crops import cluster_ids, crop
 from .recog.decode import greedy, nbest
 from .recog.model import load
@@ -88,21 +88,31 @@ def check(text: str, n_satellites: int) -> list[str]:
 
 class OCR:
     def __init__(self, checkpoint: str, repair: bool = False, margin: float = 3.0, space_ratio: float = 0.5,
-                 fusing_rate: float = 0.02, linefinder: str | None = None):
+                 fusing_rate: float = 0.02, linefinder: str | None = None, line_reader: str | None = None):
         # `repair` lets the rules swap in a next-best reading when the ink disagrees with the first.
         # It helps a little on clean rendered pages and hurts on the one real scan tested so far
         # (4.9% vs 4.6% character error), so it is off unless asked for. Doubts are flagged either way.
         self.model, self.vocab, _ = load(checkpoint)
-        self.model.eval()
+        self.dev = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model.to(self.dev).eval()
+        # A line reader reads each whole line in one go, in place of the cluster reader. The blobs
+        # still say which ink each line is made of.
+        self.line_reader = None
+        if line_reader:
+            from .recog.linereader import LineReader
+            self.line_reader = LineReader(line_reader, device=self.dev)
         self.finder = None
         if linefinder:
             from .blobs.linefinder import LineFinder
             self.finder = LineFinder(linefinder)
         self.repair, self.margin, self.space_ratio, self.fusing_rate = repair, margin, space_ratio, fusing_rate
 
-    def read(self, gray: np.ndarray, lay: Layout | None = None, hints: np.ndarray | None = None) -> PageResult:
-        lay = lay or analyze(gray, hints=hints)
+    def read(self, gray: np.ndarray, lay: Layout | None = None, hints: np.ndarray | None = None,
+             hint_rank: np.ndarray | None = None) -> PageResult:
+        lay = lay or analyze(gray, hints=hints, hint_rank=hint_rank)
         ids = cluster_ids(lay)
+        if self.line_reader is not None:
+            return self._read_lines(gray, lay, ids)
         items = [(li, b) for li, ln in enumerate(lay.lines) for b in ln.bodies]
         crops = [crop(gray, lay, ids[b], lay.lines[li].baseline, lay.lines[li].scale) for li, b in items]
         logps = self._run(crops)
@@ -146,6 +156,23 @@ class OCR:
         self._space(lay, lines)
         return PageResult([LineResult(_line_text(cl), cl) for cl in lines], lay, notes)
 
+    def _read_lines(self, gray: np.ndarray, lay: Layout, ids: dict[int, list[int]]) -> PageResult:
+        """Read each line as one image. A line's image is the box of its ink with a little margin."""
+        H, W = gray.shape
+        crops, owners = [], []
+        for li, ln in enumerate(lay.lines):
+            blobs = [b for body in ln.bodies for b in ids[body]]
+            if not blobs:
+                continue
+            bx = lay.boxes[blobs]
+            x0, y0, x1, y1 = int(bx[:, 0].min()), int(bx[:, 1].min()), int(bx[:, 2].max()), int(bx[:, 3].max())
+            h = y1 - y0
+            crops.append(gray[max(int(y0 - 0.18 * h), 0) : min(int(y1 + 0.18 * h) + 1, H), max(int(x0 - 0.3 * h), 0) : min(int(x1 + 0.3 * h) + 1, W)])
+            owners.append(li)
+        texts = dict(zip(owners, self.line_reader.read(crops))) if crops else {}
+        lines = [LineResult(texts.get(li, ""), [Cluster(b, ids[b], "", 0.0) for b in ln.bodies] if li in texts else []) for li, ln in enumerate(lay.lines)]
+        return PageResult(lines, lay, ["read-by-line"])
+
     def read_page(self, gray: np.ndarray) -> DocumentPage:
         """Clean the page, find its columns by whitespace and its lines with the trained line finder
         (if one was given), then read each column in reading order.
@@ -154,17 +181,12 @@ class OCR:
         """
         from .blobs.clean import clean_page
 
-        gray = clean_page(gray).gray
+        cleaned = clean_page(gray)
+        gray = cleaned.gray
         lines = self.finder.lines(gray) if self.finder is not None else None
         out = []
-        for r in find_regions(gray):
-            crop = np.pad(gray[r.y0 : r.y1, r.x0 : r.x1], 16, constant_values=255)
-            hints = None
-            if lines is not None and len(lines):
-                cx, cy = (lines[:, 0] + lines[:, 2]) / 2, (lines[:, 1] + lines[:, 3]) / 2
-                mine = lines[(cx >= r.x0) & (cx <= r.x1) & (cy >= r.y0) & (cy <= r.y1)]
-                hints = mine - np.array([r.x0 - 16, r.y0 - 16, r.x0 - 16, r.y0 - 16], np.float32)
-            out.append((r, self.read(crop, hints=hints)))
+        for r, crop, hints, rank in plan(gray, cleaned.rules, lines, pad=16):
+            out.append((r, self.read(crop, hints=hints, hint_rank=rank)))
         return DocumentPage(out)
 
     def _run(self, crops: list[np.ndarray]) -> list[np.ndarray]:
@@ -177,7 +199,7 @@ class OCR:
                 x = torch.zeros(len(idx), 2, crops[idx[0]].shape[1], W)
                 for k, j in enumerate(idx):
                     x[k, :, :, : crops[j].shape[2]] = torch.from_numpy(crops[j]).float() / 255
-                logp = self.model(x).numpy()
+                logp = self.model(x.to(self.dev)).cpu().numpy()
                 for k, j in enumerate(idx):
                     out[j] = logp[: crops[j].shape[2] // 2, k]
         return out  # type: ignore[return-value]
