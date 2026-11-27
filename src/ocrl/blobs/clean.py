@@ -22,6 +22,9 @@ class Cleaned:
     # that meet uprights, and the uprights themselves (often one piece per row). Painted out all the same.
     grid: list[tuple[int, int, int, int]] = field(default_factory=list)
     uprights: list[tuple[int, int, int, int]] = field(default_factory=list)
+    # Line drawings (maps, charts, diagrams: _drawings), also listed in `pictures`. Their strokes are painted out;
+    # the text among them is not.
+    drawings: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
 def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
@@ -41,7 +44,14 @@ def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
     # 2. Ink, for finding what is not text.
     _, ink = cv2.threshold(out, 0, 1, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
-    hs = stats[1:, 3][stats[1:, 4] >= 3]
+    # A page scanned in black and white with a dither (show-through and grey shading come out as fields of
+    # dots a pixel or two across) has tens of thousands of specks: they must not set the letter height (a
+    # letter of nine pixels made every Arabic alef an "upright rule"), and they are painted out below. A
+    # speck is 8 pixels or fewer at 300 dpi; the dot of a 6-point Arabic letter is about 16.
+    tiny = stats[:, 4] <= 8
+    tiny[0] = False
+    stippled = STIPPLE and int(tiny.sum()) > 3000 and tiny[1:].mean() > 0.5
+    hs = stats[1:, 3][stats[1:, 4] >= (12 if stippled else 3)]
     tall = float(np.percentile(hs, 90)) if len(hs) else 20.0
     tall = min(tall, H / 25)  # a page of photographs must not make "a letter" huge
 
@@ -96,11 +106,17 @@ def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
         if not (mlab[py : py + ph, px : px + pw] == i).any():
             continue
         if pw > 4 * tall and ph > 4 * tall:  # a banner one line high with text on it is not a picture
+            if SHADED and _shaded(out, (int(px), int(py), int(px + pw), int(py + ph))):
+                panels += 1
+                continue
             pictures.append((int(px), int(py), int(px + pw), int(py + ph)))
             if area > 0.8 * pw * ph:  # a plain rectangle: take all of it
                 pic_mask[max(py - pad, 0) : py + ph + pad, max(px - pad, 0) : px + pw + pad] = 1
             else:  # a cut-out shape with text set around it: take only the shape
                 pic_mask |= cv2.dilate((mlab == i).astype(np.uint8), np.ones((2 * pad + 1, 2 * pad + 1), np.uint8))
+
+    if SHADED and panels:  # shadings lifted above: the ink as it now stands
+        _, ink = cv2.threshold(out, 0, 1, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
 
     # 5. Ruled lines: table frames, boxes, the rule above footnotes, underlines. A frame is one connected
     #    blob that would swallow every cell inside it. A ruled line is a straight run of ink far longer
@@ -136,9 +152,89 @@ def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
         notes.append("pictures")
     out[erase[labels]] = 255
     out[pic_mask > 0] = 255
+    if stippled:
+        notes.append("stippled")
+        out[tiny[labels]] = 255
     if drop_rules:
         out[rules > 0] = 255
-    return Cleaned(out, pictures, across_rules if drop_rules else [], notes, grid, upright_boxes)
+    drawings: list[tuple[int, int, int, int]] = []
+    if DRAWINGS and drop_rules:
+        drawings, strokes = _drawings(out, tall)
+        if drawings:
+            notes.append("drawings")
+            out[strokes] = 255
+            # A drawing's frame (a map's border, a chart's box) is ruled lines like a table's: it must not be
+            # put together into a table. Rules inside a drawing go with it.
+            within = lambda b: any(b[0] >= d[0] - 2 * tall and b[2] <= d[2] + 2 * tall and b[1] >= d[1] - 2 * tall and b[3] <= d[3] + 2 * tall for d in drawings)
+            across_rules = [b for b in across_rules if not within(b)]
+            grid = [b for b in grid if not within(b)]
+            upright_boxes = [b for b in upright_boxes if not within(b)]
+    return Cleaned(out, pictures + drawings, across_rules if drop_rules else [], notes, grid, upright_boxes, drawings)
+
+
+SHADED = True  # an area of a few flat tones with dark text on them (a table shaded row by row) is lifted, not masked (_shaded)
+
+
+def _shaded(out: np.ndarray, box: tuple[int, int, int, int]) -> bool:
+    """A table whose rows are shaded in turn (grey, white, grey), or a box of two shadings, is found as one
+    area of in-between greys, like a photograph; but where a photograph has every tone, this area has two or
+    three flat ones (the paper and the shadings) and dark letters on them. If so, every pixel near one of the
+    flat tones becomes paper, the letters stay, `out` is changed in place, and it is not a picture."""
+    x0, y0, x1, y1 = box
+    reg = out[y0:y1, x0:x1]
+    hist = np.bincount(reg.ravel(), minlength=256).astype(np.float64)
+    smooth = np.convolve(hist, np.ones(9) / 9, mode="same")
+    peaks = [v for v in range(120, 256) if smooth[v] >= smooth[max(v - 12, 0) : v + 13].max() and smooth[v] > 0.008 * reg.size]
+    if not peaks or len(peaks) > 3:
+        return False
+    near = np.zeros(256, bool)
+    for v in peaks:
+        near[max(v - 25, 0) : v + 26] = True
+    darkest = min(peaks)
+    dark = hist[: max(darkest - 60, 0)].sum() / reg.size
+    if hist[near].sum() / reg.size < 0.8 or not 0.01 <= dark <= 0.4:
+        return False
+    reg[reg >= darkest - 30] = 255
+    return True
+
+
+STIPPLE = True  # a dithered black-and-white scan's specks are painted out and kept out of the letter height
+DRAWINGS = True  # maps, charts and diagrams in line work are found and their strokes painted out (_drawings)
+
+
+def _drawings(out: np.ndarray, tall: float) -> tuple[list[tuple[int, int, int, int]], np.ndarray]:
+    """Line drawings: maps, charts, diagrams. Their ink is mostly a few long thin strokes that sprawl over an
+    area many letters wide and tall (a coastline, a border, a curve), which no letter, word or line of text does:
+    a piece of ink more than eight letter-heights long, more than two and a half across both ways, and filling
+    under a sixth of its box. (A frame of ruled lines is gone by now; a word joined to the line below fills more
+    of its box.) The drawing is the area such strokes cover, with what lies among them, and is returned as a
+    box; the strokes themselves are painted out so that they are not read as letters. Text within the area (a
+    map's place names, a chart's labels) is left: the reader decides which of it to keep (pipeline.read_page)."""
+    _, ink = cv2.threshold(out, 0, 1, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    x, y, w, h, a = (st[:, i] for i in range(5))
+    fill = a / np.maximum(w * h, 1)
+    big = (np.maximum(w, h) > 8 * tall) & (np.minimum(w, h) > 2.5 * tall) & (fill < 0.15)
+    big[0] = False
+    if not big.any():
+        return [], np.zeros(out.shape, bool)
+    strokes = big[lab]
+    # the area: the strokes' boxes, and boxes that overlap them, joined
+    boxes = [[int(x[i]), int(y[i]), int(x[i] + w[i]), int(y[i] + h[i])] for i in np.flatnonzero(big)]
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                p, q = boxes[i], boxes[j]
+                if min(p[2], q[2]) + tall > max(p[0], q[0]) and min(p[3], q[3]) + tall > max(p[1], q[1]):
+                    boxes[i] = [min(p[0], q[0]), min(p[1], q[1]), max(p[2], q[2]), max(p[3], q[3])]
+                    del boxes[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    return [tuple(b) for b in boxes], strokes
 
 
 def _panel(out: np.ndarray, mask: np.ndarray, at: tuple[int, int], dark_only: bool = False) -> bool:

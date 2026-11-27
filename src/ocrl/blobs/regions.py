@@ -287,6 +287,43 @@ def split_at_uprights(lines: np.ndarray, uprights: list[tuple[int, int, int, int
     return np.array(out, np.float32).reshape(-1, 4)
 
 
+GAP_SPLIT = True  # a line is cut at a blank gap far wider than any word space (split_at_gaps)
+
+
+def split_at_gaps(lines: np.ndarray, gray: np.ndarray, wide: float = 2.5) -> np.ndarray:
+    """Cut line boxes at a blank stretch more than `wide` line-heights wide. The line finder sometimes runs the
+    cells of an unruled table row, or a title and its page number, into one line. A word space in Arabic or
+    Latin print is under half a line-height, and even a justified line stretches its spaces (or its letters,
+    with tatweel) to well under two: a gap of two and a half line-heights is not inside a line of text.
+    Measured on the middle of the line's height, so that a tall letter of the line above or below does not
+    fill the gap. Each piece is a line of its own; a piece with no ink is dropped."""
+    if lines is None or len(lines) == 0:
+        return lines
+    ink = gray < 128
+    out = []
+    for x0, y0, x1, y1 in lines:
+        h = y1 - y0
+        a, b = int(y0 + 0.25 * h), int(np.ceil(y1 - 0.25 * h))
+        ix0, ix1 = max(int(x0), 0), int(np.ceil(x1))
+        if b <= a or ix1 - ix0 < 2 * wide * h:
+            out.append((x0, y0, x1, y1))
+            continue
+        col = ink[max(a, 0) : b, ix0:ix1].any(axis=0)
+        on = np.flatnonzero(col)
+        if not len(on):
+            continue
+        # blank runs between the first and last ink
+        gaps = np.flatnonzero(np.diff(on) > wide * h)
+        if not len(gaps):
+            out.append((x0, y0, x1, y1))
+            continue
+        starts = [on[0]] + [on[g + 1] for g in gaps]
+        ends = [on[g] + 1 for g in gaps] + [on[-1] + 1]
+        for s, e in zip(starts, ends):
+            out.append((ix0 + s - 1, y0, ix0 + e + 1, y1))
+    return np.array(out, np.float32).reshape(-1, 4)
+
+
 WHOLE_LINES = True  # a region reaches out to the whole of each line it holds (_whole_lines)
 
 

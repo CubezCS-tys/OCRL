@@ -54,6 +54,8 @@ main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);flex:1;min-h
 .blk.heading .txt{font-weight:700}.blk.aside .txt{color:var(--muted);font-size:15px}
 .blk.table .txt{font-size:14px;color:var(--muted)}
 .lb{position:absolute;display:none;border:2px solid #e8590c;background:#e8590c26;border-radius:2px;pointer-events:none;z-index:2}.lb.on{display:block}
+.lb.warned{display:block;border:2px dashed #c92a2a;background:none}.ln.warned{text-decoration:underline wavy #c92a2a;text-underline-offset:4px}
+.pwarn{font-size:12px;color:#c92a2a;background:#c92a2a14;border-left:3px solid #c92a2a;padding:4px 8px;margin:0 0 6px}
 .ln{border-radius:3px}.blk.verse .ln{display:block}.ln:hover,.ln.on{background:#e8590c2e;box-shadow:0 0 0 2px #e8590c2e}
 details.figs{margin:2px 0;padding:6px 4px;border-radius:4px}details.figs summary{cursor:pointer;font-size:12px;color:var(--c)}details.figs summary b{display:inline-block;min-width:18px;height:18px;border-radius:9px;background:var(--c);color:#fff;font:600 10.5px/18px "Segoe UI",sans-serif;text-align:center;margin-right:6px;padding:0 5px}
 .cell{position:absolute;border:1px dashed color-mix(in srgb,var(--c) 55%,transparent);pointer-events:none}
@@ -67,11 +69,26 @@ table.grid.wide{font-size:12.5px;line-height:1.45}table.grid.wide td,table.grid.
 .tblnote{font:12px "Segoe UI",sans-serif;color:var(--muted);margin-top:3px}
 .blk.table .txt,.blk.table{overflow-x:auto}
 .dpg{font-size:12px;color:var(--muted);margin:10px 0 2px;padding-top:6px;border-top:1px dashed var(--line)}.dpg:first-child{border:0;margin-top:0;padding-top:0}
+.follow{margin-left:14px;white-space:nowrap;cursor:pointer}.follow input{vertical-align:-2px;margin:0 4px 0 0}
 .nav{margin-top:6px;font-size:12.5px;color:var(--muted)}.nav a{display:inline-block;min-width:22px;padding:0 4px;margin:0 1px;text-align:center;color:var(--ink);text-decoration:none;border:1px solid var(--line);border-radius:4px;cursor:pointer}.nav a:hover{background:var(--panel)}
 @media(max-width:900px){body{height:auto;display:block}main{grid-template-columns:1fr}.pane{overflow:visible}}
 """
 
 _JS = """
+// the two sides follow each other: scrolling one brings the other to the same place of the same page
+(()=>{const P=document.querySelectorAll('main>.pane');if(P.length<2)return;const S=P[0],D=P[1],box=document.getElementById('follow');
+ let lead=null,busy=false;[S,D].forEach(p=>['wheel','touchstart','pointerdown','keydown'].forEach(v=>p.addEventListener(v,()=>{lead=p;},{passive:true})));
+ const marks=(p,sel)=>[...p.querySelectorAll(sel)];
+ const where=(p,sel)=>{const top=p.getBoundingClientRect().top,ms=marks(p,sel);let k=-1;
+   for(let i=0;i<ms.length;i++){if(ms[i].getBoundingClientRect().top-top<=8)k=i;else break;}
+   if(k<0)return null;const a=ms[k].getBoundingClientRect().top,b=k+1<ms.length?ms[k+1].getBoundingClientRect().top:a+p.scrollHeight-p.scrollTop;
+   return {n:ms[k].id.slice(1),f:Math.min(Math.max((top-a)/Math.max(b-a,1),0),1)};};
+ const go=(p,sel,pre,at)=>{const e=document.getElementById(pre+at.n);if(!e)return;const ms=marks(p,sel),i=ms.indexOf(e);
+   const a=e.getBoundingClientRect().top,b=i+1<ms.length?ms[i+1].getBoundingClientRect().top:a+p.scrollHeight-p.scrollTop;
+   p.scrollTop+=a+at.f*(b-a)-p.getBoundingClientRect().top;};
+ const follow=(src)=>{if(busy||(box&&!box.checked)||lead!==src)return;busy=true;requestAnimationFrame(()=>{
+   const at=src===S?where(S,'.pg'):where(D,'.dpg');if(at)(src===S?go(D,'.dpg','d',at):go(S,'.pg','s',at));busy=false;});};
+ S.addEventListener('scroll',()=>follow(S),{passive:true});D.addEventListener('scroll',()=>follow(D),{passive:true});})();
 document.querySelectorAll('.ln').forEach(e=>{const l=()=>document.getElementById(e.dataset.l);
   e.addEventListener('mouseenter',()=>l()&&l().classList.add('on'));e.addEventListener('mouseleave',()=>l()&&l().classList.remove('on'));
   e.addEventListener('click',ev=>{ev.stopPropagation();const b=l();if(b){b.classList.add('on');b.scrollIntoView({behavior:'smooth',block:'center'});}});});
@@ -157,7 +174,19 @@ def _fold_figures(items: list) -> list[str]:
     return out
 
 
+def _page_warnings(master: dict, number: int) -> str:
+    """A banner over a scan page that may not have been read properly (pipeline._warn), and the lines that say so."""
+    pg = next((p for p in master["pages"] if p["number"] == number), {})
+    n = sum(1 for b in master["blocks"] for part in b.get("parts", []) if part["page"] == number for w in part.get("line_warnings", []) if w)
+    said = list(pg.get("warnings", [])) + ([f"{n} line{'s' if n > 1 else ''} not read properly (dashed on the scan, wavy in the text)"] if n else [])
+    if pg.get("pictures"):
+        said.append(f"{len(pg['pictures'])} picture{'s' if len(pg['pictures']) > 1 else ''} not read")
+    return f'<p class="pwarn">Not read properly: {html.escape("; ".join(said))}</p>' if said else ""
+
+
 def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 300, seconds: float = 0.0) -> None:
+    from .parse import join_sep
+
     name = lambda t: NAMES.get(t, t.replace("_", " ").capitalize())
     counts = Counter(b["type"] for b in master["blocks"])
     # every type present, also one this file has no colour for (it is drawn grey but still listed)
@@ -187,20 +216,27 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
     for b in master["blocks"]:
         if "table" in b or b["type"] == "noise" or not b["parts"] or not all("line_texts" in p for p in b["parts"]):
             continue
-        out = []
+        got = []  # (line text, its id, its page)
         for part in b["parts"]:
             pg = next(p for p in master["pages"] if p["number"] == part["page"])
-            for (x0, y0, x1, y1), t in zip(part["line_boxes"], part["line_texts"]):
-                if not t:
+            warns = part.get("line_warnings") or [[] for _ in part["line_boxes"]]  # pipeline._warn: not read properly
+            for (x0, y0, x1, y1), t, w in zip(part["line_boxes"], part["line_texts"], warns):
+                if not t and not w:
                     continue
                 n_line += 1
                 boxes.setdefault(part["page"], []).append(
-                    f'<div class="lb" id="L{n_line}" style="left:{100 * x0 / pg["width"]:.2f}%;top:{100 * y0 / pg["height"]:.2f}%;'
+                    f'<div class="lb{" warned" if w else ""}" id="L{n_line}" style="left:{100 * x0 / pg["width"]:.2f}%;top:{100 * y0 / pg["height"]:.2f}%;'
                     f'width:{100 * (x1 - x0) / pg["width"]:.2f}%;height:{100 * (y1 - y0) / pg["height"]:.2f}%"></div>')
-                out.append(f'<span class="ln" data-l="L{n_line}" title="scan page {part["page"]}">{html.escape(t)}</span>')
-        spans[b["id"]] = " ".join(out)
+                got.append((t or "[?]", n_line, part["page"], w))
+        out = ""
+        for k, (t, n, pno, w) in enumerate(got):
+            # a Latin word broken over two lines is shown whole, as the block's text has it (parse.join_sep)
+            joined = k + 1 < len(got) and join_sep(t, got[k + 1][0]) == ""
+            shown = t.rstrip()[:-1] if joined else t
+            out += f'<span class="ln{" warned" if w else ""}" data-l="L{n}" title="scan page {pno}{html.escape(": not read properly: " + "; ".join(w)) if w else ""}">{html.escape(shown)}</span>' + ("" if joined or k + 1 == len(got) else " ")
+        spans[b["id"]] = out
     scans = "".join(
-        f'<p class="pg" id="s{i}">scan page {i}</p><div class="scan"><img src="{_png(img)}" alt="Scan of page {i}">{"".join(boxes.get(i, []))}</div>'
+        f'<p class="pg" id="s{i}">scan page {i}</p>{_page_warnings(master, i)}<div class="scan"><img src="{_png(img)}" decoding="async" alt="Scan of page {i}">{"".join(boxes.get(i, []))}</div>'
         for i, img in enumerate(images, master["pages"][0]["number"]))
     captions = {b["id"]: b["text"] for b in master["blocks"] if b["type"] == "table_caption"}
     doc, at = [], None
@@ -219,7 +255,8 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
                f'<div class="txt" dir="{d}" lang="{"ar" if d == "rtl" else "en"}">{spans.get(b["id"]) or html.escape(b["text"]) or "&nbsp;"}</div></div>'))
     doc = "".join(_fold_figures(doc))
     nums = [p["number"] for p in master["pages"]]
-    nav = ('<div class="nav">Go to page: ' + "".join(f'<a data-p="{n}">{n}</a>' for n in nums) + "</div>") if len(nums) > 2 else ""
+    nav = ('<div class="nav">Go to page: ' + "".join(f'<a data-p="{n}">{n}</a>' for n in nums)
+           + ' <label class="follow"><input type="checkbox" id="follow" checked> the two sides scroll together</label></div>') if len(nums) > 1 else ""
     legend = "".join(f'<span><i style="background:{COLORS.get(t, "#6b6b6b")}"></i>{name(t)} · {counts[t]}</span>' for t in used)
     speed = f" Parsed in {seconds:.0f} seconds ({seconds / max(len(images), 1):.1f} a page) on this machine's CPU." if seconds else ""
     page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

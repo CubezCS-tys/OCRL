@@ -27,6 +27,32 @@ _MARKER = re.compile(rf"^\(?\s?[{DIGITS}]{{1,3}}\s?\)?\s?[-.)ـ]|^[-•*]\s|^\(\
 _REF_MARK = re.compile(rf"^\(?\s?[{DIGITS}][{DIGITS}\s]{{0,4}}\)|^[{DIGITS}]{{1,3}}\s?[-.]\s")
 _REF_HEAD = re.compile("المراجع|مراجع|المصادر|الهوامش|[Rr]eferences|REFERENCES")
 _DIGITS_ONLY = re.compile(rf"^[\s{DIGITS}\-–.()]+$")
+# a Latin word broken at a line's end: two Latin letters and a hyphen, the next line going on in lower case
+_BROKEN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]{2}[-­‐]$")
+_GOES_ON = re.compile(r"^[a-zß-öø-ÿ]")
+
+
+def join_sep(a: str, b: str) -> str:
+    """What stands between line `a` and the next line `b` in a block's text: nothing (and `a` loses its
+    hyphen) where a Latin word was broken over the two ("rayon-" + "nement"), else a space. Arabic is never
+    joined: it is not hyphenated, and a dash at an Arabic line's end is punctuation."""
+    return "" if _BROKEN.search(a.rstrip()) and _GOES_ON.match(b.lstrip()) else " "
+
+
+def join_lines(texts: list[str]) -> str:
+    """Lines into one text, a space between them, a broken Latin word made whole. The lines' own texts are
+    not changed: only this joined text."""
+    out = ""
+    for t in texts:
+        if not t:
+            continue
+        if not out:
+            out = t
+        elif join_sep(out, t) == "":
+            out = out.rstrip()[:-1] + t.lstrip()
+        else:
+            out += " " + t
+    return out
 
 
 @dataclass
@@ -43,6 +69,7 @@ class TextLine:
     clusters: int
     order: int = 0  # place in the region's reading order, as the pipeline gave it (rows of a table run sideways)
     ink: tuple = ()  # stroke weight, ink density and boldness for size (structure.features.ink_features)
+    warnings: list = field(default_factory=list)  # why the line may not have been read properly (pipeline._warn)
 
 
 @dataclass
@@ -57,7 +84,7 @@ class Block:
 
     @property
     def text(self) -> str:
-        return " ".join(ln.text for ln in self.lines if ln.text)
+        return join_lines([ln.text for ln in self.lines])
 
     @property
     def page(self) -> int:
@@ -83,6 +110,9 @@ class PageInfo:
     grid: list[tuple[int, int, int, int]] = field(default_factory=list)
     uprights: list[tuple[int, int, int, int]] = field(default_factory=list)
     short: list[tuple[int, int, int, int]] = field(default_factory=list)  # short rules inside ruled frames (tables.short_rules)
+    warnings: list[str] = field(default_factory=list)  # why the page may not have been read properly (pipeline._warn)
+    pictures: list[tuple[int, int, int, int]] = field(default_factory=list)  # photographs and drawings the cleaner found (not read)
+    turned: int = 0  # quarter turns (np.rot90's k) given to a page that lay on its side; width, height and boxes are of the turned page
 
 
 def _strokes(gray: np.ndarray) -> tuple[list, list, float]:
@@ -99,6 +129,9 @@ def _strokes(gray: np.ndarray) -> tuple[list, list, float]:
 
 def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
     doc = ocr.read_page(gray)
+    turned = getattr(doc, "turned", 0)  # the page lay on its side and was read turned upright: so is everything below
+    if turned:
+        gray = np.ascontiguousarray(np.rot90(gray, turned))
     rules, frames, _ = _strokes(gray)
     lines, cols, notes = [], [], []
     for ri, (r, res) in enumerate(doc.regions):
@@ -111,7 +144,8 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
             ids = [b for c in ln.clusters for b in c.blobs]
             bx = res.layout.boxes[ids]
             lines.append(TextLine(number, ri, int(bx[:, 0].min()) + ox, int(bx[:, 1].min()) + oy, int(bx[:, 2].max()) + ox,
-                                  int(bx[:, 3].max()) + oy, ln_geo.baseline + oy, ln_geo.scale, ln.text, len(ln.clusters), len(lines)))
+                                  int(bx[:, 3].max()) + oy, ln_geo.baseline + oy, ln_geo.scale, ln.text, len(ln.clusters), len(lines),
+                                  warnings=list(getattr(ln, "warnings", []))))
     if lines:
         from ..structure.features import ink_features
         for l, f in zip(lines, ink_features(gray, np.array([[l.x0, l.y0, l.x1, l.y1] for l in lines], np.float32))):
@@ -126,7 +160,8 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
     grid = cleaned.grid + cleaned.rules
     lh = float(np.median([l.y1 - l.y0 for l in lines])) if lines else 30.0
     return PageInfo(number, gray.shape[1], gray.shape[0], lines, cols, rules, frames, notes,
-                    grid, cleaned.uprights, short_rules(gray, grid, cleaned.uprights, lh, [(l.x0, l.y0, l.x1, l.y1) for l in lines]))
+                    grid, cleaned.uprights, short_rules(gray, grid, cleaned.uprights, lh, [(l.x0, l.y0, l.x1, l.y1) for l in lines]),
+                    list(getattr(doc, "warnings", [])), list(getattr(cleaned, "pictures", [])), turned)
 
 
 FOOTNOTE_RULE = True  # running text under a short rule at a column's edge is footnotes (_footnotes_under_rule)
@@ -278,6 +313,8 @@ def parse(ocr: OCR, pages: list[np.ndarray], first: int = 1, typer=None,
     infos = []
     for n, g in enumerate(pages, first):
         infos.append(read_page(ocr, g, n))
+        if infos[-1].turned and isinstance(pages, list):  # the reader stood the page upright: show it that way too
+            g = pages[n - first] = np.ascontiguousarray(np.rot90(g, infos[-1].turned))
         if MARKS:
             unread_marks(infos[-1], g)
         if progress is not None:
@@ -457,7 +494,9 @@ def _margin_lines(infos: list[PageInfo]) -> list[dict[int, str]]:
                 seen.append((k, i, side, w, (l.y0 + l.y1) / 2, l.y1 - l.y0))
     # the same words at the same height on the page: a note that repeats sits wherever its page's notes end
     for k, i, side, w, y, h in seen:
-        if any(k2 != k and s2 == side and abs(y2 - y) < 1.5 * max(h, h2) and _similar(w, w2) > 0.8 for k2, _, s2, w2, y2, h2 in seen):
+        # and set at about the same size: a first page's title, printed big, has the words of later running heads
+        if any(k2 != k and s2 == side and abs(y2 - y) < 1.5 * max(h, h2) and min(h, h2) > 0.65 * max(h, h2) and _similar(w, w2) > 0.8
+               for k2, _, s2, w2, y2, h2 in seen):
             out[k][i] = "running_head" if side == "top" else "running_foot"
     return out
 
@@ -481,9 +520,13 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
         roles, starts, _ = typer.tag(np.array([[l.x0, l.y0, l.x1, l.y1] for l in ls]), [l.text for l in ls], p.width, p.height, ink,
                                      **({"margin": margin} if margin else {}))
         kinds = [TO_TYPE.get(r, "other") for r in roles]
+        _heads_in_text(ls, kinds)
+        starts = np.array(starts, np.float64)
+        ls, kinds, starts, paired = _couplets(ls, kinds, starts)
         # One block per table, put together from its cells (tables.py), standing where its first line is read.
         found = find_tables(p, ls, kinds)
         owner = {i: t for t in found for i in t.members}
+        _not_tables(ls, kinds, starts, owner, found)
         placed: set[int] = set()
         cur: Block | None = None
         for i, (ln, kind, start) in enumerate(zip(ls, kinds, starts)):
@@ -501,7 +544,8 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
                         cur = Block(t.lines, "table", table=t)
                     out.append(cur)
                 continue
-            same_place = cur is not None and (cur.lines[-1].page, cur.lines[-1].region) == (ln.page, ln.region)
+            same_place = cur is not None and ((cur.lines[-1].page, cur.lines[-1].region) == (ln.page, ln.region)
+                                              or (id(cur.lines[-1]) in paired and id(ln) in paired))
             if cur is not None and cur.type == kind and same_place and start < 0.5 and kind not in ASIDE:
                 cur.lines.append(ln)
                 continue
@@ -517,6 +561,10 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
     _references_go_on(infos, out)
     if len(infos) > 1:
         _page_furniture(infos, out)
+    _first_page_title(infos, out)
+    _prose_not_verse(out)
+    _join_formulas(infos, out)
+    _join_titles(out)
     _join_tables(out)
     order = 0
     for i, b in enumerate(out):
@@ -529,6 +577,253 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             order += 1
             b.order = order
     return out
+
+
+_TEXT = {"paragraph", "list_item", "reference", "footnote", "abstract", "other", "standfirst", "pull_quote", "verse", "affiliation",
+         "degree_statement", "keywords"}  # running text a line the model called a table cell can go back to
+
+
+def _not_tables(ls: list[TextLine], kinds: list[str], starts: np.ndarray, owner: dict, found: list) -> None:
+    """Lines the model called table cells that are in no table (tables.find_tables found no rows and columns
+    there: a justified line cut at its spaces, a glossary's term) go back to the text around them: the type of
+    the line before them in the same column, or of the line after, or a paragraph; and they carry on the block
+    before when they sit at the ordinary distance under it, or on the same row. Then a line the model called a
+    caption, with no table near it, standing in running text (the same text above and below, as close as
+    lines of a paragraph, and as wide as them) is that text."""
+    n = len(ls)
+    lh = float(np.median([l.y1 - l.y0 for l in ls])) if ls else 0.0
+    for i in range(n):
+        if kinds[i] != "table" or i in owner:
+            continue
+        l = ls[i]
+        prev = next((k for k in range(i - 1, -1, -1) if ls[k].region == l.region and k not in owner), None)
+        nxt = next((k for k in range(i + 1, n) if ls[k].region == l.region and k not in owner and kinds[k] != "table"), None)
+        if prev is not None and kinds[prev] in _TEXT:
+            kinds[i] = kinds[prev]
+            q = ls[prev]
+            level = min(q.y1, l.y1) - max(q.y0, l.y0) > 0.5 * min(q.y1 - q.y0, l.y1 - l.y0)
+            starts[i] = 0.0 if level or 0 <= l.y0 - q.y1 < 0.8 * max(q.y1 - q.y0, l.y1 - l.y0) else 1.0
+        elif (nxt is None or kinds[nxt] not in _TEXT) and len(l.text.strip()) < 4:
+            kinds[i], starts[i] = "noise", 1.0  # a speck or a letter on its own, with no text beside it
+        else:
+            kinds[i] = kinds[nxt] if nxt is not None and kinds[nxt] in _TEXT else "paragraph"
+            starts[i] = 1.0
+    for i in range(1, n - 1):
+        a, l, b = ls[i - 1], ls[i], ls[i + 1]
+        if kinds[i] != "table_caption" or i in owner or kinds[i - 1] != kinds[i + 1] or kinds[i - 1] not in _TEXT:
+            continue
+        if not (a.region == l.region == b.region) or any(min(abs(t.box[1] - l.y1), abs(l.y0 - t.box[3])) < 3 * lh for t in found):
+            continue
+        h = max(a.y1 - a.y0, l.y1 - l.y0, b.y1 - b.y0)
+        tight = 0 <= l.y0 - a.y1 < h and 0 <= b.y0 - l.y1 < h
+        wide = l.x1 - l.x0 > 0.8 * max(a.x1 - a.x0, b.x1 - b.x0)  # as wide as the text around it (a short note under a table is not)
+        if tight and wide:
+            kinds[i] = kinds[i - 1]
+            starts[i] = 0.0
+
+
+_BODY = _TEXT | {"heading", "title", "author", "table", "table_caption"}  # the page's own text, inside its margins
+
+
+VERSE = True  # a poem set in half-lines, in two columns, is read across: each line's two halves together (_couplets)
+
+
+def _couplets(ls: list[TextLine], kinds: list[str], starts: np.ndarray) -> tuple[list, list, np.ndarray, set]:
+    """A poem set in two half-lines (hemistichs) stands on the page as two narrow columns, and the line finder
+    takes them as two regions read one after the other: the whole first column, then the second. A line of
+    verse is read across: its first half, then its second. Two regions side by side whose lines pair off at
+    the same heights (four pairs at least, most lines of each paired), with most of those lines called verse,
+    are one poem: the lines are put in the order half, half, next line, all typed verse, and a new block
+    begins only where the gap between two lines of the poem is wider than usual (a new stanza).
+    Returns the lines, kinds and starts in the new order, and the ids of the paired lines."""
+    if not VERSE or len(ls) < 8:
+        return ls, kinds, starts, set()
+    regions: dict[int, list[int]] = {}
+    for i, l in enumerate(ls):
+        regions.setdefault(l.region, []).append(i)
+    latin = sum(c.isascii() and c.isalpha() for l in ls for c in l.text)
+    ltr = latin > 0.5 * max(sum(c.isalpha() for l in ls for c in l.text), 1)
+    level = lambda a, b: min(a.y1, b.y1) - max(a.y0, b.y0) > 0.6 * min(a.y1 - a.y0, b.y1 - b.y0)
+    paired: set[int] = set()
+    for ra, A in regions.items():
+        for rb, B in regions.items():
+            a0, b0 = ls[A[0]], ls[B[0]]
+            ax0, ax1 = min(ls[i].x0 for i in A), max(ls[i].x1 for i in A)
+            bx0, bx1 = min(ls[i].x0 for i in B), max(ls[i].x1 for i in B)
+            first_right = not ltr
+            if ra == rb or not ((ax0 > bx1) if first_right else (ax1 < bx0)) or A[0] in paired or B[0] in paired:
+                continue
+            match, used = {}, set()
+            for i in A:
+                j = next((j for j in B if j not in used and level(ls[i], ls[j])), None)
+                if j is not None:
+                    match[i] = j
+                    used.add(j)
+            n = len(match)
+            both = list(match) + list(match.values())
+            if n < 4 or n < 0.7 * len(A) or n < 0.7 * len(B) or sum(kinds[k] == "verse" for k in both) < 0.4 * len(both):
+                continue
+            gap = (ax0 - bx1) if first_right else (bx0 - ax1)
+            if gap > 0.5 * max(ax1 - ax0, bx1 - bx0):
+                continue  # two columns far apart: not the halves of one line
+            # the poem, read across; lines of either column without a partner stand where their height puts them
+            rows = sorted([(ls[i].y0, 0, i) for i in A] + [(ls[match_of].y0 if (match_of := next((a for a, b in match.items() if b == j), None)) is not None
+                                                            else ls[j].y0, 1, j) for j in B])
+            order = [i for _, _, i in rows]
+            keep = set(A) | set(B)
+            at = min(keep)
+            rest = [k for k in range(len(ls)) if k not in keep]
+            new = [k for k in rest if k < at] + order + [k for k in rest if k > at]
+            pitch = float(np.median(np.diff(sorted(ls[i].y0 for i in A))))
+            for k in keep:
+                kinds[k] = "verse"
+            new_starts = starts.copy()
+            prev_y = None
+            for k in order:
+                y = ls[k].y0
+                new_starts[k] = 1.0 if prev_y is None or y - prev_y > 1.5 * pitch else 0.0
+                if prev_y is None or y > prev_y:
+                    prev_y = y
+            ls, kinds, starts = [ls[k] for k in new], [kinds[k] for k in new], new_starts[new]
+            paired |= {id(l) for l in ls if l.region in (ra, rb)}
+            return ls, kinds, starts, paired  # one poem a page is what this looks for
+    return ls, kinds, starts, paired
+
+
+def _heads_in_text(ls: list[TextLine], kinds: list[str]) -> None:
+    """A running head stands above all the page's text and a running foot below it. A line called one with
+    lines of the page's text above it (two at least; below it, for a foot) is inside the page: words set in a figure near the top
+    of the page, say. It goes with what stands beside it in its column: a figure, when the column holds
+    pictures (specks and figure text), or else a paragraph."""
+    # lines of text, not a masthead's scraps (a logo's letters, an issue number)
+    body = [l for l, k in zip(ls, kinds) if k in _BODY and len(l.text.split()) >= 3]
+    for i, (l, k) in enumerate(zip(ls, kinds)):
+        if k == "running_head":
+            inside = sum(o.y1 < l.y0 for o in body) >= 2
+        elif k == "running_foot":
+            inside = sum(o.y0 > l.y1 for o in body) >= 2
+        else:
+            continue
+        if inside:
+            pictured = any(kinds[j] in ("noise", "figure") and ls[j].region == l.region for j in range(len(ls)) if j != i)
+            kinds[i] = "figure" if pictured else "paragraph"
+
+
+def _join_formulas(infos: list[PageInfo], blocks: list[Block]) -> None:
+    """A formula is one block. The line finder cuts a displayed formula into its pieces (a fraction's top and
+    bottom, a sum's limits, the citation beside it), and each piece came out as its own block. Equation blocks
+    that follow one another on a page and touch, or stand closer than most of a line (a fraction's bar
+    stands between its lines), are put together, their
+    lines read as a formula is: band by band, left to right."""
+    from .tables import _bands
+
+    lh = {p.number: float(np.median([l.y1 - l.y0 for l in p.lines])) if p.lines else 0.0 for p in infos}
+
+    def near(a: Block, b: Block) -> bool:
+        ax0, ay0, ax1, ay1 = a.box()
+        bx0, by0, bx1, by1 = b.box()
+        h = lh[a.page]
+        level = min(ay1, by1) - max(ay0, by0) > 0.3 * min(ay1 - ay0, by1 - by0)  # beside it: its number, a leader of dots
+        return level or not (by0 > ay1 + 0.8 * h or ay0 > by1 + 0.8 * h or bx0 > ax1 + 2 * h or ax0 > bx1 + 2 * h)
+
+    i = 0
+    while i < len(blocks):
+        a = blocks[i]
+        if a.type != "equation" or a.parent is not None:
+            i += 1
+            continue
+        run, j = [i], i + 1  # the equation blocks that follow one another here (specks between them aside)
+        while j < len(blocks) and blocks[j].page == a.page and (blocks[j].type == "noise" or (blocks[j].type == "equation" and blocks[j].parent is None)):
+            if blocks[j].type == "equation":
+                run.append(j)
+            j += 1
+        parent = {k: k for k in run}
+
+        def find(k):
+            while parent[k] != k:
+                k = parent[k]
+            return k
+
+        for x in run:
+            for y in run:
+                if x < y and find(x) != find(y) and near(blocks[x], blocks[y]):
+                    parent[find(y)] = find(x)
+        gone = []
+        for k in run:
+            r = find(k)
+            if r != k:
+                blocks[r].lines += blocks[k].lines
+                gone.append(k)
+        for k in run:
+            if find(k) == k and any(find(o) == k for o in gone):
+                b = blocks[k]
+                b.lines = [l for band in _bands(b.lines, lh[b.page]) for l in sorted(band, key=lambda l: l.x0)]
+        for k in reversed(gone):
+            del blocks[k]
+        i += 1
+
+
+def _join_titles(blocks: list[Block]) -> None:
+    """A title set on two or three lines is one title. Title blocks that follow one another on a page, the next
+    straight under the last (less than a line's height of air between), in the same script and about the same
+    letter size, are one block. A title and its translation (another script) stay two."""
+    from .viewer import _dir
+
+    i = 0
+    while i + 1 < len(blocks):
+        a, b = blocks[i], blocks[i + 1]
+        if a.type == b.type == "title" and a.page == b.page and a.parent is None and b.parent is None:
+            la, lb = a.lines[-1], b.lines[0]
+            h = max(la.y1 - la.y0, lb.y1 - lb.y0)
+            close = 0 <= lb.y0 - la.y1 < h and min(la.x1, lb.x1) - max(la.x0, lb.x0) > 0
+            if close and _dir(a.text) == _dir(b.text) and abs(la.scale - lb.scale) < 0.3 * max(la.scale, lb.scale):
+                a.lines += b.lines
+                del blocks[i + 1]
+                continue
+        i += 1
+
+
+_LATIN_WORD = re.compile(r"[A-Za-z]{3,}")
+
+
+def _prose_not_verse(blocks: list[Block]) -> None:
+    """Arabic verse holds neither English words nor figures nor references to notes. Lines called verse in one
+    column of a page (a narrow column of justified text beside a picture looks like a poem) that carry such words or figures (two at least, and one in every 150 letters) are prose: paragraphs. Latin verse is left as it is."""
+    from ..text import DIGITS
+
+    runs: dict[tuple[int, int], list[Block]] = {}
+    for b in blocks:
+        if b.type == "verse":
+            runs.setdefault((b.page, b.lines[0].region), []).append(b)
+    for run in runs.values():
+        text = " ".join(b.text for b in run)
+        ar = sum("\u0600" <= c <= "\u06ff" for c in text)
+        la = sum(c.isascii() and c.isalpha() for c in text)
+        if la > ar:
+            continue
+        foreign = len(_LATIN_WORD.findall(text)) + len(re.findall(rf"[{DIGITS}]+", text))
+        if foreign >= max(2, len(text) / 150):  # a long poem may hold a stray figure (a misread mark, a verse number)
+            for b in run:
+                b.type = "paragraph"
+
+
+def _first_page_title(infos: list[PageInfo], blocks: list[Block]) -> None:
+    """On a document's first page, a line called a running head that is set much larger than the running
+    heads (on that page or on others) is the article's title: the same words as the running heads of later
+    pages, but the title is printed big. Only where other running heads are there to compare with."""
+    if not infos:
+        return
+    first = infos[0].number
+    heads = [b for b in blocks if b.type == "running_head"]
+    height = lambda b: float(np.median([l.y1 - l.y0 for l in b.lines]))
+    p = infos[0]
+    for b in heads:
+        # below the top margin, where running heads stand, and words enough for a title (not a masthead's scraps)
+        if b.page != first or b.box()[1] < 0.12 * p.height or len(b.text.split()) < 3:
+            continue
+        others = [height(o) for o in heads if o is not b]
+        if others and height(b) >= 1.4 * float(np.median(others)):
+            b.type = "title"
 
 
 _UNDER_RULE = {"paragraph", "list_item", "other", "standfirst", "pull_quote", "verse", "abstract"}  # what a footnote gets called
@@ -546,17 +841,27 @@ def _footnotes_under_rule(infos: list[PageInfo], blocks: list[Block]) -> None:
             continue
         lh = float(np.median([l.y1 - l.y0 for l in p.lines]))
         for r in p.rules:
-            if r[1] < 0.4 * p.height:
+            if r[1] < 0.2 * p.height:
                 continue
             span = [l for l in p.lines if l.x1 > r[0] and l.x0 < r[2]]
             if not span:
                 continue
+            if r[1] < 0.4 * p.height:
+                # high on the page (a page of little text): only with the notes' own numbers under it, the first
+                # line under the rule opening with one and another note after it
+                under = sorted((l for l in span if l.y0 > r[3]), key=lambda l: l.y0)
+                if not under or not _REF_MARK.match(under[0].text.strip()) or sum(bool(_REF_MARK.match(l.text.strip())) for l in under) < 2:
+                    continue
             cx0, cx1 = min(l.x0 for l in span), max(l.x1 for l in span)
             w = (r[2] - r[0]) / max(cx1 - cx0, 1)
             flush = abs(r[2] - cx1) < 1.5 * lh or abs(r[0] - cx0) < 1.5 * lh
             # clear of text above and below: an underline has its words sitting on it
             clear = not any(r[1] - 0.6 * lh < l.y1 and l.y0 < r[3] + 0.3 * lh for l in span)
-            if 0.2 <= w <= 0.5 and flush and clear and sum(l.y1 <= r[1] for l in span) >= 3:
+            # alone at its height: a stroke with another beside it is a piece of a longer rule drawn in parts (the
+            # foot of a table, ruled column by column), not the short rule over the notes
+            alone = not any(o != r and abs((o[1] + o[3]) / 2 - (r[1] + r[3]) / 2) < lh and o[2] > cx0 and o[0] < cx1 for o in p.rules + p.grid
+                            if not (o[0] >= r[0] - 2 and o[2] <= r[2] + 2))
+            if 0.2 <= w <= 0.5 and flush and clear and alone and sum(l.y1 <= r[1] for l in span) >= 3:
                 cuts.setdefault(p.number, []).append((r[1], cx0, cx1))
     if not cuts:
         return
@@ -625,7 +930,9 @@ def _page_furniture(infos: list[PageInfo], blocks: list[Block]) -> None:
         side = band(b)
         if not side or b.type == "page_number" or len(words(b)) < 6:
             continue
-        again = any(o.page != b.page and band(o) == side and _similar(words(b), words(o)) > 0.8 for o in lone)
+        size = lambda o: o.lines[0].y1 - o.lines[0].y0
+        again = any(o.page != b.page and band(o) == side and min(size(o), size(b)) > 0.65 * max(size(o), size(b))
+                    and _similar(words(b), words(o)) > 0.8 for o in lone)
         if again:
             b.type = "running_head" if side == "top" else "running_foot"
 
@@ -636,9 +943,21 @@ def _join_tables(blocks: list[Block]) -> None:
     from ..structure.tag import ASIDE
     from .tables import continues, same_direction
 
+    from .tables import _NAMES_TABLE
+
     flow = [b for b in blocks if b.type not in ASIDE]
-    for a, b in zip(flow, flow[1:]):
-        if a.type == b.type == "table" and a.table is not None and b.table is not None and continues(a.table, b.table):
+
+    def furniture(o: Block, a: Block, b: Block) -> bool:
+        """A line or two of a few words outside both parts, above the second on its page or below the first on its page
+        (a journal's masthead the model did not call a running head), and not a caption naming a table."""
+        x0, y0, x1, y1 = o.box()
+        outside = (o.page == b.page and y1 <= b.table.box[1]) or (o.page == a.page and y0 >= a.table.box[3])
+        return len(o.lines) <= 2 and len(o.text) < 60 and outside and not _NAMES_TABLE.match(o.text)
+
+    tables = [k for k, o in enumerate(flow) if o.type == "table" and o.table is not None]
+    for i, j in zip(tables, tables[1:]):
+        a, b = flow[i], flow[j]
+        if continues(a.table, b.table) and all(furniture(o, a, b) for o in flow[i + 1 : j]):
             b.parent = a.parent or a
             same_direction(b.parent.table, b.table)
     for i, b in enumerate(blocks):
@@ -736,18 +1055,20 @@ def to_master(doc_id: str, infos: list[PageInfo], blocks: list[Block], dpi: int 
         group = [b] + [o for o in blocks if o.parent is b]
         parts = []
         for g in group:
-            regions: dict = {}
+            pages: dict = {}
             for l in g.lines:
-                regions.setdefault((l.page, l.region), []).append(l)
-            for (page, _), ls in regions.items():
-                box = [round(v / dpi, 3) for v in g.box(ls)]
-                lines = [[round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1)] for l in ls]
-                texts = [l.text for l in ls]  # each line's own text, beside its box (the viewer links the two)
+                pages.setdefault(l.page, {}).setdefault(l.region, []).append(l)
+            for page, regions in pages.items():
+                boxes = [[round(v / dpi, 3) for v in g.box(ls)] for ls in regions.values()]
+                # the lines in the block's own order (a couplet's two halves stand in two columns, read across)
+                on = [l for l in g.lines if l.page == page]
+                lines = [[round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1)] for l in on]
+                texts = [l.text for l in on]  # each line's own text, beside its box (the viewer links the two)
                 if parts and parts[-1]["page"] == page:
-                    parts[-1]["regions"].append(box); parts[-1]["line_boxes"] += lines; parts[-1]["line_texts"] += texts
+                    parts[-1]["regions"] += boxes; parts[-1]["line_boxes"] += lines; parts[-1]["line_texts"] += texts
                 else:
-                    parts.append({"page": page, "regions": [box], "line_boxes": lines, "line_texts": texts})
-        entry = {"id": b.id, "type": b.type, "text": " ".join(g.text for g in group), "parts": parts}
+                    parts.append({"page": page, "regions": boxes, "line_boxes": lines, "line_texts": texts})
+        entry = {"id": b.id, "type": b.type, "text": join_lines([g.text for g in group]), "parts": parts}
         if b.type == "table" and b.table is not None:
             # one region per page: the table's own box, not the boxes of the columns its cells fell into
             parts = [{"page": g.table.page, "regions": [[round(v / dpi, 3) for v in g.table.box]],
@@ -765,9 +1086,34 @@ def to_master(doc_id: str, infos: list[PageInfo], blocks: list[Block], dpi: int 
         else:
             entry["aside"] = True
         out.append(entry)
+    _add_warnings(out, infos, dpi)
     return {
         "id": doc_id,
         "made_by": {"text": f"OCRL reader ({reader}), local, no outside service", "structure": structure or "OCRL geometry rules, local, no model. Not checked by a person."},
-        "pages": [{"number": p.number, "width": round(p.width / dpi, 4), "height": round(p.height / dpi, 4), "unit": "inch"} for p in infos],
+        "pages": [_page_entry(p, dpi) for p in infos],
         "blocks": out,
     }
+
+
+def _page_entry(p: PageInfo, dpi: int) -> dict:
+    """A page of the master file; with "warnings" (why it may not have been read properly) and "pictures"
+    (photographs and drawings that were not read, boxes in inches) when it has any."""
+    e = {"number": p.number, "width": round(p.width / dpi, 4), "height": round(p.height / dpi, 4), "unit": "inch"}
+    if p.warnings:
+        e["warnings"] = list(p.warnings)
+    if p.pictures:
+        e["pictures"] = [[round(v / dpi, 3) for v in b] for b in p.pictures]
+    return e
+
+
+def _add_warnings(blocks: list[dict], infos: list[PageInfo], dpi: int) -> None:
+    """Beside each part's line_texts, "line_warnings": for each line, why it may not have been read properly
+    (pipeline._warn). Only on parts where some line has one."""
+    warned = {(l.page, tuple(round(v / dpi, 3) for v in (l.x0, l.y0, l.x1, l.y1))): l.warnings for p in infos for l in p.lines if l.warnings}
+    if not warned:
+        return
+    for b in blocks:
+        for part in b.get("parts", []):
+            ws = [list(warned.get((part["page"], tuple(lb)), [])) for lb in part.get("line_boxes", [])]
+            if any(ws):
+                part["line_warnings"] = ws

@@ -565,7 +565,12 @@ def find_tables(page, lines: list, kinds: list[str]) -> list[Table]:
         return b[0] - pad <= cx <= b[2] + pad and b[1] - pad <= cy <= b[3] + pad
 
     # --- ruled frames
-    found = frames(page.grid, page.uprights, lh_page)
+    # The sides of a border printed round the page stand outside all the text and run most of its height.
+    # Left in, a table whose rules reach close to the border was joined to it, and the two were thrown out
+    # together as the page's border: the table was then rebuilt from alignment, without its rules.
+    tx0, tx1 = min(l.x0 for l in lines), max(l.x1 for l in lines)
+    ups = [u for u in page.uprights if not (u[3] - u[1] >= 0.8 * page.height and (u[2] <= tx0 or u[0] >= tx1))]
+    found = frames(page.grid, ups, lh_page)
     found = innermost(found) if NESTED else found
     if NESTED:  # a frame round (nearly) the whole page is the page's border, though a table inside touches it
         found = [b for b in found if not page_border(b, page.width, page.height)]
@@ -592,6 +597,15 @@ def find_tables(page, lines: list, kinds: list[str]) -> list[Table]:
         taken |= set(idx)
         tables.append((t, idx))
 
+    # --- a table ruled across only (rules over and under it, under its header, between groups of rows)
+    for box, idx, across in _rule_bands(page, lines, kinds, taken, lh_page):
+        ls = [lines[i] for i in idx]
+        lh = float(np.median([l.y1 - l.y0 for l in ls]))
+        t = _build(page, ls, _aligned_grid(ls, box, lh, across), box, False, lh)
+        if t.n_rows >= 2 and t.n_cols >= 2:
+            taken |= set(idx)
+            tables.append((t, idx))
+
     # --- cells the structure model found, outside any frame; then text it called part of a figure, when
     #     that text sits in a full grid of rows and columns (a chart's labels do not: they run along its axes)
     for kind in ("table", "figure"):
@@ -613,9 +627,106 @@ def find_tables(page, lines: list, kinds: list[str]) -> list[Table]:
                     continue
             taken |= members
             tables.append((t, idx))
+    tables = [(t, idx) for t, idx in tables if t.ruled or _tabular(t, page, lines, kinds, [o for o, _ in tables])]
     for t, idx in tables:
         t.members = idx
     return [t for t, _ in sorted(tables, key=lambda x: (x[0].box[1], -x[0].box[2]))]
+
+
+_NAMES_TABLE = re.compile(r"^\s*(?:ال)?جدول|^\s*(?:table|tableau|tabelle)\b", re.I)
+
+
+def _merge_rules(strokes: list[Box], lh: float) -> list[Box]:
+    """Strokes at one height with small breaks between them are one rule: a rule across a table is often
+    drawn in pieces, one per column."""
+    out: list[list[float]] = []
+    for b in sorted(strokes, key=lambda b: ((b[1] + b[3]) / 2, b[0])):
+        y = (b[1] + b[3]) / 2
+        for o in out:
+            if abs((o[1] + o[3]) / 2 - y) <= 0.5 * lh and b[0] <= o[2] + 1.5 * lh and b[2] >= o[0] - 1.5 * lh:
+                o[0], o[1], o[2], o[3] = min(o[0], b[0]), min(o[1], b[1]), max(o[2], b[2]), max(o[3], b[3])
+                break
+        else:
+            out.append([b[0], b[1], b[2], b[3]])
+    return [tuple(int(v) for v in o) for o in out]
+
+
+def _rule_bands(page, lines: list, kinds: list[str], taken: set[int], lh: float) -> list[tuple[Box, list[int], list[Box]]]:
+    """Tables ruled across only, with no uprights: two or more rules of the same length stacked down the page
+    with the cells between them. The rules alone do not make a table (a quotation or an abstract is set
+    between rules too), so it also needs: lines short as cells are (a handful of words), some of them called
+    table cells by the model, and either a caption naming a table just above it or three columns at least.
+    A caption's header row, when it stands between the caption and the first rule, is part of the table.
+    Returns (box, line indices, the rules) per table."""
+    rules = [r for r in _merge_rules(list(getattr(page, "rules", [])) + list(page.grid), lh) if r[2] - r[0] > 6 * lh]
+    rules.sort(key=lambda r: r[1])
+    skip = {"running_head", "running_foot", "page_number", "noise"}
+    words = lambda l: len(l.text.split())
+    out = []
+    used: set[int] = set()
+    for a in range(len(rules)):
+        if a in used:
+            continue
+        chain = [rules[a]]
+        for b in range(a + 1, len(rules)):
+            r, last = rules[b], chain[-1]
+            ov = min(r[2], last[2]) - max(r[0], last[0])
+            if ov < 0.8 * max(r[2] - r[0], last[2] - last[0]):
+                continue
+            between = [l for l in lines if last[3] <= (l.y0 + l.y1) / 2 <= r[1] and min(l.x1, r[2]) - max(l.x0, r[0]) > 0]
+            if sum(l.x1 - l.x0 > 0.85 * (r[2] - r[0]) for l in between) >= 2:
+                break  # a paragraph across the whole width between them: not one table
+            chain.append(r)
+            used.add(b)
+        if len(chain) < 2:
+            continue
+        x0, x1 = min(r[0] for r in chain), max(r[2] for r in chain)
+        top, bot = chain[0], chain[-1]
+        # a caption naming a table, its foot within three lines above the first rule
+        cap = [i for i, l in enumerate(lines) if (kinds[i] == "table_caption" or _NAMES_TABLE.match(l.text))
+               and (l.y0 + l.y1) / 2 < top[1] and top[1] - l.y1 < 3 * lh and min(l.x1, x1) - max(l.x0, x0) > 0]
+        y0 = max(lines[i].y1 for i in cap) if cap else top[1]
+        # between the rules everything is a cell, whatever the model called it (a number taken for a page
+        # number, a header cell for a speck), but the page's own furniture in its margins and specks with no letter
+        margin = lambda l: l.y1 < 0.12 * page.height or l.y0 > 0.88 * page.height
+        within = [i for i, l in enumerate(lines) if i not in cap and x0 - lh <= (l.x0 + l.x1) / 2 <= x1 + lh and y0 < (l.y0 + l.y1) / 2 < bot[1]]
+        if any(i in taken for i in within):
+            continue  # rules round a table already found (a border round the page): not a table of their own
+        idx = [i for i in within if kinds[i] not in ("running_head", "running_foot")
+               and not (kinds[i] in skip and (margin(lines[i]) or sum(c.isalnum() for c in lines[i].text) < 2))]
+        if len(idx) < 4:
+            continue
+        ls = [lines[i] for i in idx]
+        cellish = sum(kinds[i] in ("table", "table_caption", "figure") for i in idx) / len(idx)
+        if np.median([words(l) for l in ls]) > 6 or float(np.median([l.x1 - l.x0 for l in ls])) > 0.6 * (x1 - x0) or cellish < 0.2:
+            continue
+        cols = len(_columns(ls, x0, x1, lh)) - 1
+        if not cap and cols < 3:
+            continue
+        out.append(((int(x0), int(min(min(l.y0 for l in ls), top[1])), int(x1), int(max(max(l.y1 for l in ls), bot[3]))), idx, chain))
+    return out
+
+
+def _tabular(t: Table, page, lines: list, kinds: list[str], others: list[Table]) -> bool:
+    """An unruled table needs the evidence of one: two rows or more AND two columns or more. One row of
+    words is a line of justified text the line finder cut at its wide spaces, and one column is a list of
+    words (the terms of a glossary). A row next to a table of several rows is kept (it
+    becomes the table's title or source note); otherwise one row is kept only as the first or last text of
+    the page (the end of a table cut by the page break, or its start). Many cells over several lines' height stay a table though their grid
+    came out as one row or one column: that is the grid's failure, not the model's."""
+    if t.n_rows >= 2 and t.n_cols >= 2:
+        return True
+    lh = float(np.median([l.y1 - l.y0 for l in t.lines])) if t.lines else 0.0
+    if t.box[3] - t.box[1] > 2 * lh and len(t.lines) > 3:
+        return True  # many lines the model called cells, over several lines' height: a table whose grid could not be read
+    if any(o is not t and o.n_rows > 1 and min(abs(o.box[1] - t.box[3]), abs(t.box[1] - o.box[3])) < 3 * lh for o in others):
+        return True  # parse._typed_blocks makes it the table's caption (or its source note)
+    if t.n_cols < 2:
+        return False
+    aside = {"running_head", "running_foot", "page_number", "noise"}
+    mine = {id(l) for l in t.lines}
+    text = [l for l, k in zip(lines, kinds) if k not in aside and id(l) not in mine]
+    return not any(l.y1 <= t.box[1] for l in text) or not any(l.y0 >= t.box[3] for l in text)
 
 
 def _gather(lines, kinds, seeds: list[int], taken: set[int], lh: float) -> list[list[int]]:

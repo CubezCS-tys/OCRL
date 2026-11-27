@@ -16,6 +16,7 @@ import torch
 
 from .blobs.layout import Layout, analyze
 from .blobs.regions import Region, find_regions, is_ltr, plan, split_at_uprights
+from .blobs import regions as regions_mod
 from .recog.crops import cluster_ids, crop
 from .recog.decode import greedy, nbest
 from .recog.model import load
@@ -45,6 +46,7 @@ class Cluster:
 class LineResult:
     text: str
     clusters: list[Cluster]  # right to left, as they sit on the page
+    warnings: list[str] = field(default_factory=list)  # why this line may not have been read properly (_warn)
 
 
 @dataclass
@@ -71,6 +73,9 @@ class DocumentPage:
     # The page as cleaned before reading (ocrl.blobs.clean.Cleaned): its image, and the ruled lines and
     # pictures that were painted out of it. Handed on so that nothing downstream cleans the page again.
     cleaned: object = None
+    found: np.ndarray | None = None  # the line finder's boxes on the page, after cutting at uprights (for diagnosis)
+    warnings: list[str] = field(default_factory=list)  # why this page may not have been read properly (_warn)
+    turned: int = 0  # quarter turns (np.rot90's k) the page was given to stand it upright before reading; boxes are on the turned page
 
     @property
     def text(self) -> str:
@@ -173,6 +178,8 @@ class OCR:
                 continue
             bx = lay.boxes[blobs]
             x0, y0, x1, y1 = int(bx[:, 0].min()), int(bx[:, 1].min()), int(bx[:, 2].max()), int(bx[:, 3].max())
+            if DROP_SPECKS and max(x1 - x0, y1 - y0) < 12:
+                continue  # a speck (12 pixels at 300 dpi is under a 6-point letter): read, it becomes invented text
             h = y1 - y0
             crops.append(gray[max(int(y0 - 0.18 * h), 0) : min(int(y1 + 0.18 * h) + 1, H), max(int(x0 - 0.3 * h), 0) : min(int(x1 + 0.3 * h) + 1, W)])
             owners.append(li)
@@ -188,10 +195,18 @@ class OCR:
         """
         from .blobs.clean import clean_page
 
+        turned = 0
+        if TURN and self.finder is not None and self.line_reader is not None:
+            from .blobs.orient import orientation
+            if orientation(gray)[0] in (90, 270):
+                turned = self._upright(gray)
+                gray = np.ascontiguousarray(np.rot90(gray, turned))
         cleaned = clean_page(gray)
         gray = cleaned.gray
         lines = self.finder.lines(gray) if self.finder is not None else None
         lines = split_at_uprights(lines, cleaned.uprights, gray)  # one line per table cell, not two cells as one
+        if regions_mod.GAP_SPLIT and lines is not None:
+            lines = regions_mod.split_at_gaps(lines, gray)  # nor two cells of an unruled table
         if CELL_INK and lines is not None:
             lines = cell_ink(lines, cleaned.uprights, gray)
         ltr = is_ltr(gray)
@@ -202,7 +217,42 @@ class OCR:
             if self.line_reader is not None:
                 _join_marks(res, ltr, ups - np.array([r.x0 - 16, r.y0 - 16] * 2, np.float32))
             out.append((r, res))
-        return DocumentPage(out, cleaned)
+        doc = DocumentPage(out, cleaned, lines, turned=turned)
+        if WARN:
+            _warn(doc)
+        return doc
+
+    @torch.no_grad()
+    def _upright(self, gray: np.ndarray) -> int:
+        """A page lying on its side: which quarter turn (np.rot90's k, 1 or 3) stands it up. The ink alone tells
+        sideways from upright reliably but the two ways round less so (22 of 27 pages), so both are tried: the
+        line finder's longest lines on each are read, and the way the reader is surer of its letters wins."""
+        from .blobs.clean import clean_page
+        best, best_k = -1.0, 1
+        for k in (1, 3):
+            g = clean_page(np.ascontiguousarray(np.rot90(gray, k))).gray
+            boxes = self.finder.lines(g)
+            if not len(boxes):
+                continue
+            boxes = boxes[np.argsort(boxes[:, 0] - boxes[:, 2])[:12]]
+            H, W = g.shape
+            confs = []
+            for x0, y0, x1, y1 in boxes:
+                h = y1 - y0
+                c = g[max(int(y0 - 0.1 * h), 0) : min(int(y1 + 0.1 * h) + 1, H), max(int(x0), 0) : min(int(x1) + 1, W)]
+                if c.size == 0 or c.shape[0] < 4:
+                    continue
+                x = torch.from_numpy(self.line_reader.prepare(c))[None, None].float().to(self.line_reader.dev)
+                p = torch.softmax(self.line_reader.net(x).float(), -1)[:, 0].cpu().numpy()  # [T, C]
+                top = p.argmax(-1)
+                blank = 0 if self.line_reader.blank_first else p.shape[1] - 1
+                letters = top != blank
+                if letters.any():
+                    confs.append(float(p.max(-1)[letters].mean()))
+            conf = float(np.mean(confs)) if confs else 0.0
+            if conf > best:
+                best, best_k = conf, k
+        return best_k
 
     def _run(self, crops: list[np.ndarray]) -> list[np.ndarray]:
         out: list[np.ndarray | None] = [None] * len(crops)
@@ -237,6 +287,92 @@ class OCR:
             # digits needs a clearly wider gap. (A prior, not a rule of the script.)
             wide = 1.6 if a.text[-1] in DIGITS and b.text[0] in DIGITS else 1.0
             a.space_after = forced or gap > threshold * wide
+
+
+DROP_SPECKS = True  # a line whose ink is a speck is not read (_read_lines)
+WARN = True  # every page and line says when it may not have been read properly (_warn)
+# The words of the warnings, as the master file carries them (the viewer shows them as they are).
+W_NOTHING = "nothing read"  # a line with ink, read as nothing
+W_SHORT = "read far too short for its ink"
+W_TALL = "taller than its letters: joined with a speck or the line above"
+W_UNREAD = "ink not read"  # page: a share of the letter-sized ink is in no line
+W_BLANK = "blank page"
+W_DOUBT = "many lines doubtful"
+W_SIDEWAYS = "page turned on its side: read as it lies, the text is likely garbage"
+W_TURNED = "page lay on its side: turned upright ({} degrees counter-clockwise) and read; boxes are on the turned page"
+TURN = True  # a page lying on its side is turned upright before it is read (OCR._upright)
+
+
+def _warn(doc: DocumentPage) -> None:
+    """No silent errors: say where the reading cannot be trusted, from the ink and the reading alone.
+
+    A line: read as nothing although it holds ink; read far too short for the length of its ink (Arabic and
+    Latin print give about three letters for each line-height of length; under half a letter per line-height is
+    not a reading of that ink: measured on 25,000 Azure lines, 99.5% hold more than 1.4); or much taller than its
+    own letters and than the page's lines (a letter joined with a streak, a speck or the line above, which the
+    reader then cannot read). A page: blank; a share of its letter-sized ink in no line at all (lost lines); many
+    doubtful lines."""
+    hs, boxes = [], []
+    for r, res in doc.regions:
+        lay = res.layout
+        for ln_geo, ln in zip(lay.lines, res.lines):
+            if not ln.clusters:
+                continue
+            bx = lay.boxes[[b for c in ln.clusters for b in c.blobs]]
+            box = (float(bx[:, 0].min()), float(bx[:, 1].min()), float(bx[:, 2].max()), float(bx[:, 3].max()))
+            boxes.append((r.x0 - 16 + box[0], r.y0 - 16 + box[1], r.x0 - 16 + box[2], r.y0 - 16 + box[3]))
+            hs.append(box[3] - box[1])
+    med = float(np.median(hs)) if hs else 0.0
+    n_doubt = 0
+    for r, res in doc.regions:
+        lay = res.layout
+        for ln_geo, ln in zip(lay.lines, res.lines):
+            if not ln.clusters:
+                continue
+            bx = lay.boxes[[b for c in ln.clusters for b in c.blobs]]
+            w, h = float(bx[:, 2].max() - bx[:, 0].min()), float(bx[:, 3].max() - bx[:, 1].min())
+            letters = len(ln.text.replace(" ", ""))
+            if not ln.text.strip():
+                ln.warnings.append(W_NOTHING)
+            elif h > 0 and w / h >= 3 and letters < 0.5 * w / h:
+                ln.warnings.append(W_SHORT)
+            body_h = lay.boxes[ln_geo.bodies, 3] - lay.boxes[ln_geo.bodies, 1] if ln_geo.bodies else np.zeros(0)
+            if len(body_h) and h > 2.5 * float(np.median(body_h)) and h > 1.8 * med:
+                ln.warnings.append(W_TALL)
+            n_doubt += bool(ln.warnings)
+    cleaned = doc.cleaned
+    if cleaned is None:
+        return
+    gray = cleaned.gray
+    from .blobs.orient import orientation
+    if doc.turned:
+        doc.warnings.append(W_TURNED.format(90 * doc.turned))
+    elif orientation(gray)[0] in (90, 270):  # on 27 pages Azure found turned, all 27 called sideways; none of 30 upright pages
+        doc.warnings.append(W_SIDEWAYS)
+    from .blobs.layout import binarize
+    n, _, st, _ = cv2.connectedComponentsWithStats(binarize(gray), connectivity=8)
+    st = st[1:]
+    live = st[:, 4] >= 3
+    tall = float(np.percentile(st[live, 3], 90)) if live.any() else 0.0
+    letters = live & (st[:, 3] >= 0.6 * tall) & (st[:, 3] <= 4 * tall) & (st[:, 2] <= 15 * tall)
+    if letters.sum() < 5 or not boxes:
+        if letters.sum() < 5:
+            doc.warnings.append(W_BLANK)
+        return
+    cx, cy = st[letters, 0] + st[letters, 2] / 2, st[letters, 1] + st[letters, 3] / 2
+    area = st[letters, 4].astype(np.float64)
+    b = np.asarray(boxes, np.float32)
+    pad = 0.3 * med
+    inside = ((b[None, :, 0] - pad <= cx[:, None]) & (cx[:, None] <= b[None, :, 2] + pad)
+              & (b[None, :, 1] - pad <= cy[:, None]) & (cy[:, None] <= b[None, :, 3] + pad)).any(axis=1)
+    lost = float(area[~inside].sum() / max(area.sum(), 1))
+    if lost >= UNREAD_SHARE:
+        doc.warnings.append(f"{W_UNREAD}: {round(100 * lost)}% of the page's letters are in no line")
+    if n_doubt >= 3 and n_doubt >= 0.2 * len(boxes):
+        doc.warnings.append(f"{W_DOUBT}: {n_doubt} of {len(boxes)}")
+
+
+UNREAD_SHARE = 0.12  # one page of heavily vowelled text from an unseen journal had 10% (its marks), with no line lost
 
 
 CELL_INK = True  # ink alone in a ruled table cell that no line holds is a line of its own (cell_ink)
