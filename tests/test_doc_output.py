@@ -53,3 +53,20 @@ def test_a_picture_read_as_many_figure_blocks_is_folded():
     out = _fold_figures(items)
     assert len(out) == 3 and out[1].startswith("<details") and "4 pieces" in out[1]
     assert _fold_figures(items[:6]) == ["<p>page 1</p>", '<div class="blk figure">1</div>', '<div class="blk figure">2</div>']
+
+
+def test_an_l_shaped_merge_of_places_closes_into_one_cell():
+    from ocrl.doc.tables import _Grid
+
+    g = _Grid([0, 1, 2], [0, 1, 2])  # 2 x 2 places
+    g.union(0, 1, 1, 1)  # the right column...
+    g.union(1, 1, 1, 0)  # ...and the bottom row: an L whose box's corner (0, 0) is not in it
+    groups = g.groups()  # used to loop for ever
+    assert sorted(groups.values()) == [(0, 0, 2, 2)]
+
+
+def test_a_frame_round_the_whole_page_is_its_border():
+    from ocrl.doc.tables import page_border
+
+    assert page_border((100, 90, 2380, 3420), 2480, 3508)
+    assert not page_border((200, 900, 2200, 1800), 2480, 3508)

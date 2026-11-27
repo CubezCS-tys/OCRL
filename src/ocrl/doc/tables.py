@@ -111,8 +111,11 @@ class _Grid:
             for g, (r0, c0, r1, c1) in rect.items():
                 for r in range(r0, r1 + 1):
                     for c in range(c0, c1 + 1):
-                        if self.find(r * C + c) != self.find(g):
-                            self.union(r0, c0, r, c)
+                        # join the place to the group itself: its box's corner (r0, c0) need not be in it (an L
+                        # shape), and joining to the corner's group instead never closed it: an endless loop
+                        a, b = self.find(g), self.find(r * C + c)
+                        if a != b:
+                            self.parent[b] = a
                             changed = True
             if not changed:
                 return {g: (r0, c0, r1 - r0 + 1, c1 - c0 + 1) for g, (r0, c0, r1, c1) in rect.items()}
@@ -537,6 +540,12 @@ def innermost(boxes: list[Box]) -> list[Box]:
     return [b for b in boxes if not any(inside(a, b) for a in boxes)]
 
 
+def page_border(box: Box, width: float, height: float) -> bool:
+    """A frame over at least 80% of the page's width and of its height: the border some journals print round
+    every page (running heads and all), not a table."""
+    return box[2] - box[0] >= 0.8 * width and box[3] - box[1] >= 0.8 * height
+
+
 def find_tables(page, lines: list, kinds: list[str]) -> list[Table]:
     """Tables on one page. `lines` are the page's lines and `kinds` what the structure model called each.
 
@@ -558,6 +567,8 @@ def find_tables(page, lines: list, kinds: list[str]) -> list[Table]:
     # --- ruled frames
     found = frames(page.grid, page.uprights, lh_page)
     found = innermost(found) if NESTED else found
+    if NESTED:  # a frame round (nearly) the whole page is the page's border, though a table inside touches it
+        found = [b for b in found if not page_border(b, page.width, page.height)]
     for box in sorted(found, key=lambda b: (b[1], -b[2])):
         # inside a frame, whatever it was called (a heading row read as a running head, say), but a page
         # number in the page's top or bottom margin: a frame drawn round the whole page, or one reaching

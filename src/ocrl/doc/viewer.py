@@ -63,6 +63,7 @@ table.grid td,table.grid th{border:1px solid #c9c1ae;padding:3px 8px;vertical-al
 table.grid th{background:#efe9dc;font-weight:700}
 table.grid caption{caption-side:top;text-align:start;font-weight:700;padding:0 0 5px;color:var(--c)}
 table.grid td.empty{background:repeating-linear-gradient(135deg,#fff 0 5px,#f6f3ec 5px 10px)}
+table.grid.wide{font-size:12.5px;line-height:1.45}table.grid.wide td,table.grid.wide th{padding:2px 4px}
 .tblnote{font:12px "Segoe UI",sans-serif;color:var(--muted);margin-top:3px}
 .blk.table .txt,.blk.table{overflow-x:auto}
 .dpg{font-size:12px;color:var(--muted);margin:10px 0 2px;padding-top:6px;border-top:1px dashed var(--line)}.dpg:first-child{border:0;margin-top:0;padding-top:0}
@@ -123,7 +124,8 @@ def _table_html(b: dict, captions: dict) -> str:
     note = (f'{n} rows × {t["columns"]} columns, {"ruled" if t["ruled"] else "unruled: grid from alignment"}'
             + (", carries on over the page" if len(b["parts"]) > 1 else "")
             + (f', header repeated on the next page ({len(t["repeated_header_lines"])} lines, not shown again)' if t.get("repeated_header_lines") else ""))
-    return (f'<table class="grid" dir="{"rtl" if rtl else "ltr"}" lang="{"ar" if rtl else "en"}">'
+    wide = " wide" if t["columns"] >= 7 else ""  # many columns: smaller type, so it fits beside the scan
+    return (f'<table class="grid{wide}" dir="{"rtl" if rtl else "ltr"}" lang="{"ar" if rtl else "en"}">'
             + (f'<caption data-b="{t["caption"]}" style="--c:{COLORS["table_caption"]}">{html.escape(cap)}</caption>' if cap else "") + "".join(body) + f'</table><div class="tblnote">{note}</div>')
 
 

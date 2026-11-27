@@ -83,6 +83,7 @@ if __name__ == "__main__":
     ap.add_argument("--probe", type=int, default=0, help="only time this many training steps, save nothing")
     ap.add_argument("--init-adapter", default="", help="continue training this adapter instead of starting a new one")
     ap.add_argument("--exclude", default="", help="a split.json from an earlier run: leave out the training pages it used")
+    ap.add_argument("--split", default="", help='a JSON {"train": [...], "val": [...]} of page folders under --inputs: use these, in this order')
     ap.add_argument("--shuffle-seed", type=int, default=0, help="reorder the training pages with this seed (0: the split's order)")
     ap.add_argument("--warmup", type=int, default=20); ap.add_argument("--save-every", type=int, default=0, help="also save the adapter every this many steps")
     a = ap.parse_args()
@@ -92,7 +93,10 @@ if __name__ == "__main__":
     inputs, answers, out = ROOT / a.inputs, ROOT / a.answers, ROOT / a.out
     assert "dev_inputs" not in str(inputs)
     guide = (ROOT / "out/labeller/guide.md").read_text(encoding="utf-8")
-    train, val, dropped = split(inputs, answers, a.val_pages, a.seed)
+    if a.split:  # pages chosen beforehand (scripts/qwen_ourlines.py: our-lines and Azure-lines pages mixed, validation fixed)
+        s = json.load(open(ROOT / a.split)); train, val, dropped = s["train"], s["val"], s.get("dropped", [])
+    else:
+        train, val, dropped = split(inputs, answers, a.val_pages, a.seed)
     if a.exclude:
         prev = json.load(open(ROOT / a.exclude)); assert prev["val"] == val, "validation pages differ from the earlier run"
         seen = set(prev["train"]); train = [p for p in train if p not in seen]
