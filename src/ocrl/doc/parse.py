@@ -40,6 +40,7 @@ class TextLine:
     text: str
     clusters: int
     order: int = 0  # place in the region's reading order, as the pipeline gave it (rows of a table run sideways)
+    ink: tuple = ()  # stroke weight, ink density and boldness for size (structure.features.ink_features)
 
 
 @dataclass
@@ -102,6 +103,10 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
             bx = res.layout.boxes[ids]
             lines.append(TextLine(number, ri, int(bx[:, 0].min()) + ox, int(bx[:, 1].min()) + oy, int(bx[:, 2].max()) + ox,
                                   int(bx[:, 3].max()) + oy, ln_geo.baseline + oy, ln_geo.scale, ln.text, len(ln.clusters), len(lines)))
+    if lines:
+        from ..structure.features import ink_features
+        for l, f in zip(lines, ink_features(gray, np.array([[l.x0, l.y0, l.x1, l.y1] for l in lines], np.float32))):
+            l.ink = tuple(float(v) for v in f)
     return PageInfo(number, gray.shape[1], gray.shape[0], lines, cols, rules, frames, notes)
 
 
@@ -321,7 +326,8 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
         ls = sorted(p.lines, key=lambda l: (l.region, l.order))
         if not ls:
             continue
-        roles, starts, _ = typer.tag(np.array([[l.x0, l.y0, l.x1, l.y1] for l in ls]), [l.text for l in ls], p.width, p.height)
+        ink = np.array([l.ink for l in ls], np.float32) if all(len(l.ink) == 3 for l in ls) else None
+        roles, starts, _ = typer.tag(np.array([[l.x0, l.y0, l.x1, l.y1] for l in ls]), [l.text for l in ls], p.width, p.height, ink)
         cur: Block | None = None
         for ln, role, start in zip(ls, roles, starts):
             kind = TO_TYPE.get(role, "other")

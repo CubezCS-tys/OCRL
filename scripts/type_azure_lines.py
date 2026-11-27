@@ -32,7 +32,14 @@ for pg in az["pages"]:
         continue
     dpi = 300.0  # the model saw pixel boxes at the scan's size; only ratios matter
     boxes = np.array([[min(l["polygon"][0::2]), min(l["polygon"][1::2]), max(l["polygon"][0::2]), max(l["polygon"][1::2])] for l in pg["lines"]]) * dpi
-    roles, starts, _ = typer.tag(boxes, [l["content"] for l in pg["lines"]], pg["width"] * dpi, pg["height"] * dpi)
+    ink = None
+    img = next((f for f in Path("out/line_recall_pages", doc).glob("p-*.png") if int(f.stem.split("-")[1]) == p), None)
+    if img is not None:
+        import cv2
+        from ocrl.structure.features import ink_features
+        g = cv2.imread(str(img), cv2.IMREAD_GRAYSCALE)
+        ink = ink_features(g, boxes / dpi * np.array([g.shape[1] / pg["width"], g.shape[0] / pg["height"]] * 2))
+    roles, starts, _ = typer.tag(boxes, [l["content"] for l in pg["lines"]], pg["width"] * dpi, pg["height"] * dpi, ink)
     if args.starts == "azure":
         first = {q["spans"][0]["offset"] for q in az.get("paragraphs", [])}
         starts = np.array([1.0 if l["spans"][0]["offset"] in first else 0.0 for l in pg["lines"]])

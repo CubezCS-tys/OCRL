@@ -38,11 +38,77 @@ def text_ids(text: str, vocab: dict[str, int]) -> np.ndarray:
     return out
 
 
-def geometry(boxes: np.ndarray, texts: list[str], page_w: float, page_h: float) -> np.ndarray:
+N_INK = 3
+INK_WIDTH = 1150  # every page is measured at this width, so the numbers mean the same for any scan
+
+
+def ink_features(gray: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+    """What the ink of each line looks like: [n, N_INK] numbers the boxes and the text cannot give.
+
+    gray: the page (dark ink on light paper); boxes [n, 4] in its pixels. For each line:
+      how heavy its strokes are against the page's usual line (bold type is heavier),
+      how much of its box is ink against the page's usual line,
+      how heavy its strokes are for its own height (bold for its size, whatever the size).
+    Stroke weight is the mean distance from an ink pixel to the paper, measured on the page scaled to a fixed width.
+    """
+    import cv2
+    n = len(boxes)
+    if n == 0:
+        return np.zeros((0, N_INK), np.float32)
+    s = INK_WIDTH / gray.shape[1]
+    g = cv2.resize(gray, (INK_WIDTH, max(int(round(gray.shape[0] * s)), 8)), interpolation=cv2.INTER_AREA)
+    _, ink = cv2.threshold(g, 0, 1, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    dist = cv2.distanceTransform(ink, cv2.DIST_L2, 3)
+    stroke, dens, hh = np.zeros(n, np.float32), np.zeros(n, np.float32), np.ones(n, np.float32)
+    for k, (x0, y0, x1, y1) in enumerate(np.asarray(boxes, np.float32) * s):
+        a, b, c, d = max(int(y0) + 1, 0), max(int(y1) - 1, int(y0) + 2), max(int(x0) + 1, 0), max(int(x1) - 1, int(x0) + 2)
+        m = ink[a:b, c:d]
+        hh[k] = max(y1 - y0, 1.0)
+        if m.size and m.sum() >= 6:
+            stroke[k] = float(dist[a:b, c:d][m > 0].mean()); dens[k] = float(m.mean())
+    med_s = float(np.median(stroke[stroke > 0])) if (stroke > 0).any() else 1.0
+    med_d = float(np.median(dens[dens > 0])) if (dens > 0).any() else 1.0
+    return np.stack([np.clip(stroke / max(med_s, 1e-3), 0, 3), np.clip(dens / max(med_d, 1e-3), 0, 3), np.clip(10 * stroke / hh, 0, 3)], axis=1).astype(np.float32)
+
+
+CROP_H, CROP_W = 32, 320
+
+
+def line_crops(gray: np.ndarray, boxes: np.ndarray) -> np.ndarray:
+    """A small picture of every line, [n, CROP_H, CROP_W] uint8, ink dark on white.
+
+    The page is first scaled to INK_WIDTH, so a letter is the same number of pixels whatever the scan;
+    each line is then cut out with a little margin and shrunk to CROP_H high. A line too long for the
+    picture is squeezed to fit, which keeps both ends in view (where a list mark or a full stop sits);
+    a short one keeps its true width and sits at the right, as Arabic starts there. What the picture
+    shows and the box and text cannot: bold or light type, the size of the letters, a bullet, an
+    underline, numbers set in a row.
+    """
+    import cv2
+    n = len(boxes)
+    out = np.full((n, CROP_H, CROP_W), 255, np.uint8)
+    if n == 0:
+        return out
+    s = INK_WIDTH / gray.shape[1]
+    g = cv2.resize(gray, (INK_WIDTH, max(int(round(gray.shape[0] * s)), 8)), interpolation=cv2.INTER_AREA)
+    H, W = g.shape
+    for k, (x0, y0, x1, y1) in enumerate(np.asarray(boxes, np.float32) * s):
+        h = max(y1 - y0, 4.0)
+        a, b = max(int(y0 - 0.15 * h), 0), min(int(y1 + 0.15 * h) + 1, H)
+        c, d = max(int(x0 - 0.3 * h), 0), min(int(x1 + 0.3 * h) + 1, W)
+        if b - a < 3 or d - c < 3:
+            continue
+        cut = g[a:b, c:d]
+        w = int(np.clip(round(cut.shape[1] * CROP_H / cut.shape[0]), 4, CROP_W))
+        out[k, :, CROP_W - w :] = cv2.resize(cut, (w, CROP_H), interpolation=cv2.INTER_AREA)
+    return out
+
+
+def geometry(boxes: np.ndarray, texts: list[str], page_w: float, page_h: float, ink: np.ndarray | None = None) -> np.ndarray:
     """What a line looks like, and how it sits against the lines read just before and after it.
 
     boxes: [n, 4] x0, y0, x1, y1 in pixels, in reading order. Returns [n, N_GEOM] numbers that do
-    not depend on scan size.
+    not depend on scan size. With `ink` (from ink_features) the result is [n, N_GEOM + N_INK].
     """
     n = len(texts)
     clean = [strip_marks(t).strip() for t in texts]
@@ -75,4 +141,5 @@ def geometry(boxes: np.ndarray, texts: list[str], page_w: float, page_h: float) 
         np.array([bool(t) and sum(c in DIGITS for c in t) > 0.6 * len(t) for t in clean], np.float32),  # mostly digits
         np.array([bool(t) and sum(c.isascii() and c.isalpha() for c in t) > 0.5 * len(t) for t in clean], np.float32),  # mostly Latin
     ]
-    return np.stack(own + against(-1) + against(1) + marks, axis=1).astype(np.float32)
+    out = np.stack(own + against(-1) + against(1) + marks, axis=1).astype(np.float32)
+    return out if ink is None else np.concatenate([out, np.asarray(ink, np.float32).reshape(n, N_INK)], axis=1)

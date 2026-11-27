@@ -7,7 +7,7 @@ import re
 import numpy as np
 import torch
 
-from .features import ROLES, geometry, text_ids
+from .features import N_GEOM, N_INK, ROLES, geometry, text_ids
 from .model import load
 from ..text import strip_marks
 
@@ -20,6 +20,11 @@ TO_TYPE = {
     "pageFooter": "running_foot", "noise": "noise", "pictureText": "figure", "pictureJunk": "noise", "ornament": "noise",
     "otherArticle": "other", "formulaInk": "equation", "showThrough": "noise",
 }
+# A model retrained on block types names them directly: those names pass through unchanged.
+TYPES = ["paragraph", "heading", "list_item", "table", "table_caption", "reference", "footnote", "running_head", "running_foot", "page_number", "noise",
+         "title", "section_label", "author", "supervisor", "affiliation", "degree_statement", "standfirst", "abstract", "keywords", "figure",
+         "figure_caption", "pull_quote", "equation", "verse", "handwriting", "other"]
+TO_TYPE.update({t: t for t in TYPES if t not in TO_TYPE})
 ASIDE = {"running_head", "running_foot", "page_number", "noise"}  # outside the reading order
 MAXL = 320
 
@@ -43,7 +48,7 @@ def list_items(roles: list[str], starts: np.ndarray, texts: list[str], boxes: np
     cut by the foot of a column goes on at the head of the next one, and `open_item` says the page before
     ended inside an item. Returns the roles, the block starts, and whether this page ends inside an item."""
     n = len(texts)
-    flow = ("paragraph", "list-item", "otherArticle")
+    flow = ("paragraph", "list-item", "list_item", "otherArticle", "other")
     x0, y0, x1, y1 = (np.asarray(boxes, np.float32)[:, k] for k in range(4))
     h = np.maximum(y1 - y0, 1)
 
@@ -105,20 +110,28 @@ class Typer:
         self.open_item = False
 
     @torch.no_grad()
-    def tag(self, boxes: np.ndarray, texts: list[str], page_w: float, page_h: float):
-        """boxes [n, 4] pixels. Returns (role per line, P(line starts a block), P(role))."""
+    def tag(self, boxes: np.ndarray, texts: list[str], page_w: float, page_h: float, ink: np.ndarray | None = None,
+            crops: np.ndarray | None = None):
+        """boxes [n, 4] pixels; ink: features.ink_features for the same lines, for a model trained with them;
+        crops: features.line_crops for the same lines, for a model that looks at them.
+        Returns (role per line, P(line starts a block), P(role))."""
         n = len(texts)
         if n == 0:
             self.open_item = False
             return [], np.zeros(0), np.zeros(0)
-        geom = torch.from_numpy(geometry(np.asarray(boxes, np.float32), texts, page_w, page_h))
+        if self.model.config["n_geom"] > N_GEOM:
+            ink = np.zeros((n, N_INK), np.float32) if ink is None else ink
+        else:
+            ink = None
+        geom = torch.from_numpy(geometry(np.asarray(boxes, np.float32), texts, page_w, page_h, ink))
         text = torch.from_numpy(np.stack([text_ids(t, self.vocab) for t in texts])).long()
         roles, starts, conf = [], [], []
         for a in range(0, n, MAXL):  # a page with more lines than the model ever saw at once is read in pieces
             g, t = geom[a : a + MAXL][None], text[a : a + MAXL][None]
-            lr, ls = self.model(g, t, torch.zeros(1, g.shape[1], dtype=torch.bool))
+            pics = torch.from_numpy(crops[a : a + MAXL])[None] if crops is not None and self.model.config.get("visual") else None
+            lr, ls = self.model(g, t, torch.zeros(1, g.shape[1], dtype=torch.bool), pics)
             p = lr[0].softmax(-1)
-            roles += [ROLES[i] for i in p.argmax(-1).tolist()]
+            roles += [self.model.labels[i] for i in p.argmax(-1).tolist()]
             conf += p.max(-1).values.tolist()
             starts += torch.sigmoid(ls[0]).tolist()
         starts = np.array(starts)
