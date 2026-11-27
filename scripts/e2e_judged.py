@@ -36,6 +36,10 @@ PDFs in /home/yassine/data/check_docs). Its reference is made the same way from 
 Gemini Flash and Gemini Argon (out/labeller/check_haiku|check_flash|check_argon): a line's type is what two of
 the three chose; blocks and order are scored against Haiku's blocks (Flash's and Argon's shown too). A saved run
 remembers its set, so --show, --rescore and --compare need no --set. NEVER tune on these pages.
+A development set from unseen journals (--set unseen): 150 pages from 110 documents of 110 other journals (in no
+training data and not the exam's), chosen the same way (scripts/check_pages.py --set unseen; PDFs in
+/home/yassine/data/unseen_docs). Labelled by Haiku and Flash: a line's type is scored where the two agree; blocks and
+order against Flash's blocks. Rules may be tuned on it; it must never be training input.
     uv run python scripts/e2e_judged.py --set check --name check_now --typer "out/structure_v2.pt+out/structure_v3.pt"
 
 Results: out/e2e/NAME.json (everything, per page), out/e2e/NAME.offenders.txt (the lines we got wrong,
@@ -70,6 +74,8 @@ SET = "dev"
 SETS = {
     "dev": {"inputs": "dev_inputs", "prefix": "dev", "judges": ("opus", "sonnet", "argon"), "block_ref": "opus", "docs": "/home/yassine/data/judged_docs"},
     "check": {"inputs": "check_inputs", "prefix": "check", "judges": ("haiku", "flash", "argon"), "block_ref": "haiku", "docs": "/home/yassine/data/check_docs"},
+    # development set from unseen journals (scripts/check_pages.py --set unseen): two labellers, a type counts where both agree
+    "unseen": {"inputs": "unseen_inputs", "prefix": "unseen", "judges": ("haiku", "flash"), "block_ref": "flash", "docs": "/home/yassine/data/unseen_docs"},
 }
 
 

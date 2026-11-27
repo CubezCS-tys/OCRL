@@ -160,8 +160,12 @@ def clean_page(gray: np.ndarray, drop_rules: bool = True) -> Cleaned:
     drawings: list[tuple[int, int, int, int]] = []
     if DRAWINGS and drop_rules:
         drawings, strokes = _drawings(out, tall)
-        if drawings:
-            notes.append("drawings")
+        # An ornamental border printed round the whole page (80% of its width and height or more: tables.page_border)
+        # sprawls like a drawing. Its strokes go, but it is the page's frame, not a picture: the ruled lines
+        # inside it (tables, the rule over the footnotes) stay, and it is not listed.
+        drawings = [d for d in drawings if not (d[2] - d[0] >= 0.8 * W and d[3] - d[1] >= 0.8 * H)]
+        if strokes.any():
+            notes += ["drawings"] if drawings else ["page border"]
             out[strokes] = 255
             # A drawing's frame (a map's border, a chart's box) is ruled lines like a table's: it must not be
             # put together into a table. Rules inside a drawing go with it.

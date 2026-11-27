@@ -76,6 +76,7 @@ class DocumentPage:
     found: np.ndarray | None = None  # the line finder's boxes on the page, after cutting at uprights (for diagnosis)
     warnings: list[str] = field(default_factory=list)  # why this page may not have been read properly (_warn)
     turned: int = 0  # quarter turns (np.rot90's k) the page was given to stand it upright before reading; boxes are on the turned page
+    kept_upright: bool = False  # the ink looked sideways but the reader read it surer as it lies (OCR._upright): not turned
 
     @property
     def text(self) -> str:
@@ -195,12 +196,14 @@ class OCR:
         """
         from .blobs.clean import clean_page
 
-        turned = 0
+        turned, kept = 0, False
         if TURN and self.finder is not None and self.line_reader is not None:
             from .blobs.orient import orientation
             if orientation(gray)[0] in (90, 270):
                 turned = self._upright(gray)
-                gray = np.ascontiguousarray(np.rot90(gray, turned))
+                kept = not turned
+                if turned:
+                    gray = np.ascontiguousarray(np.rot90(gray, turned))
         cleaned = clean_page(gray)
         gray = cleaned.gray
         lines = self.finder.lines(gray) if self.finder is not None else None
@@ -217,22 +220,35 @@ class OCR:
             if self.line_reader is not None:
                 _join_marks(res, ltr, ups - np.array([r.x0 - 16, r.y0 - 16] * 2, np.float32))
             out.append((r, res))
-        doc = DocumentPage(out, cleaned, lines, turned=turned)
+        doc = DocumentPage(out, cleaned, lines, turned=turned, kept_upright=kept)
         if WARN:
             _warn(doc)
         return doc
 
     @torch.no_grad()
     def _upright(self, gray: np.ndarray) -> int:
-        """A page lying on its side: which quarter turn (np.rot90's k, 1 or 3) stands it up. The ink alone tells
+        """A page lying on its side: which quarter turn (np.rot90's k, 1 or 3; 0: it is upright after all) stands it up. The ink alone tells
         sideways from upright reliably but the two ways round less so (22 of 27 pages), so both are tried: the
         line finder's longest lines on each are read, and the way the reader is surer of its letters wins."""
+        c = self._confs(gray, (0, 1, 3))
+        k = 3 if c[3] > c[1] else 1
+        # The ink can mistake a page of photographs (columns, trees, people standing) for lines on their side.
+        # The reader settles it: a page it reads clearly surer as it lies than turned either way is upright
+        # (0 returned). On 31 pages the detector called sideways (2026-11-27: 29 Azure found turned, all still
+        # turned, the nearest 0.004 below; 2 upright pages of photographs, kept, 0.088 and 0.96 above).
+        return 0 if c[0] > c[k] + UPRIGHT_MARGIN else k
+
+    @torch.no_grad()
+    def _confs(self, gray: np.ndarray, ks=(0, 1, 3)) -> dict[int, float]:
+        """For each quarter turn k: how sure the reader is of its letters on the line finder's longest lines of
+        the page turned by k (mean top probability over non-blank frames; 0 when no line is found)."""
         from .blobs.clean import clean_page
-        best, best_k = -1.0, 1
-        for k in (1, 3):
+        out = {}
+        for k in ks:
             g = clean_page(np.ascontiguousarray(np.rot90(gray, k))).gray
             boxes = self.finder.lines(g)
             if not len(boxes):
+                out[k] = 0.0
                 continue
             boxes = boxes[np.argsort(boxes[:, 0] - boxes[:, 2])[:12]]
             H, W = g.shape
@@ -249,10 +265,8 @@ class OCR:
                 letters = top != blank
                 if letters.any():
                     confs.append(float(p.max(-1)[letters].mean()))
-            conf = float(np.mean(confs)) if confs else 0.0
-            if conf > best:
-                best, best_k = conf, k
-        return best_k
+            out[k] = float(np.mean(confs)) if confs else 0.0
+        return out
 
     def _run(self, crops: list[np.ndarray]) -> list[np.ndarray]:
         out: list[np.ndarray | None] = [None] * len(crops)
@@ -301,6 +315,7 @@ W_DOUBT = "many lines doubtful"
 W_SIDEWAYS = "page turned on its side: read as it lies, the text is likely garbage"
 W_TURNED = "page lay on its side: turned upright ({} degrees counter-clockwise) and read; boxes are on the turned page"
 TURN = True  # a page lying on its side is turned upright before it is read (OCR._upright)
+UPRIGHT_MARGIN = 0.03  # reader's surety as the page lies must beat the better turn by this much to keep it (OCR._upright)
 
 
 def _warn(doc: DocumentPage) -> None:
@@ -347,7 +362,7 @@ def _warn(doc: DocumentPage) -> None:
     from .blobs.orient import orientation
     if doc.turned:
         doc.warnings.append(W_TURNED.format(90 * doc.turned))
-    elif orientation(gray)[0] in (90, 270):  # on 27 pages Azure found turned, all 27 called sideways; none of 30 upright pages
+    elif not doc.kept_upright and orientation(gray)[0] in (90, 270):  # on 27 pages Azure found turned, all 27 called sideways; none of 30 upright pages
         doc.warnings.append(W_SIDEWAYS)
     from .blobs.layout import binarize
     n, _, st, _ = cv2.connectedComponentsWithStats(binarize(gray), connectivity=8)

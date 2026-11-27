@@ -12,6 +12,10 @@ four digits of an id) never seen in bulk_inputs or the Desk database come first;
     uv run python scripts/check_pages.py fetch --what pdf --workers 3    # PDFs of the chosen documents only
     uv run python scripts/check_pages.py inputs                      # labeller inputs -> out/labeller/check_inputs/PAGE/
 
+--set unseen: the same select and inputs steps on 110 documents from 110 other unseen journals (not the exam's), giving
+out/labeller/unseen_pages.json and unseen_inputs. That set is a DEVELOPMENT set for rules on unseen journals (tune on it,
+never train on it); the exam stays untouched.
+
 THIS IS A TEST SET. Keep out/labeller/check_* and /home/yassine/data/check_docs out of every training input, and do
 not tune anything on these pages.
 """
@@ -25,6 +29,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 LAB = ROOT / "out/labeller"
 DOCS = Path("/home/yassine/data/check_docs")
+PFX = "check"  # --set unseen: PFX "unseen", DOCS /home/yassine/data/unseen_docs (a development set for rules, see the docstring)
 IDS_MAIN = Path("/home/yassine/inkscript/experiments/44_bucket_map/out/ids_main.txt")
 DESK = "/home/yassine/data/inkscript_labelled/data/desk/releases/R20261104T151029.db"
 AWS = "/home/yassine/inkscript/.venv/bin/aws"
@@ -73,7 +78,7 @@ def candidates(n: int) -> None:
         pick.append({"id": by_j[j][int(rng.integers(len(by_j[j])))], "journal": j, "journal_unseen": j not in seen_j, "journal_unseen_anywhere": j not in seen_any})
     out = {"seed": SEED, "made": time.strftime("%Y-%m-%d %H:%M"), "excluded": {k: len(v) for k, v in S.items()},
            "ids_listed": len(ids), "ids_free": len(free), "journals_free": len(by_j), "journals_never_seen": len(fresh_j), "candidates": pick}
-    (LAB / "check_candidates.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
+    (LAB / f"{PFX}_candidates.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
     print(f"{len(ids):,} ids listed, {len(free):,} never used, in {len(by_j):,} journals ({len(fresh_j):,} never seen in bulk_inputs or Desk); "
           f"{len(pick)} candidates, {sum(p['journal_unseen'] for p in pick)} from never-seen journals")
     print("excluded:", out["excluded"])
@@ -115,9 +120,9 @@ def fetch_one(args):
 
 def fetch(what: str, workers: int) -> None:
     if what == "json":
-        docs = [c["id"] for c in json.loads((LAB / "check_candidates.json").read_text())["candidates"]]
+        docs = [c["id"] for c in json.loads((LAB / f"{PFX}_candidates.json").read_text())["candidates"]]
     else:
-        docs = sorted({p["doc"] for p in json.loads((LAB / "check_pages.json").read_text())["pages"]})
+        docs = sorted({p["doc"] for p in json.loads((LAB / f"{PFX}_pages.json").read_text())["pages"]})
     t, got, log = time.time(), 0, []
     with ThreadPoolExecutor(workers) as ex:
         for k, (doc, st, n) in enumerate(ex.map(fetch_one, [(d, what) for d in docs]), 1):
@@ -223,7 +228,8 @@ def select(n_pages: int, per_kind: int) -> None:
             opts = [r for r in by_doc[d] if (d, r["number"]) not in chosen]
             if opts:
                 take(opts[int(rng.integers(len(opts)))])
-    cand = {c["id"]: c for c in json.loads((LAB / "check_candidates.json").read_text())["candidates"]}
+    cf = LAB / f"{PFX}_candidates.json"
+    cand = {c["id"]: c for c in json.loads(cf.read_text())["candidates"]} if cf.exists() else {}
     pages = sorted(chosen.values(), key=lambda r: (r["doc"], r["number"]))
     for r in pages:
         r["page"] = f"{r['doc']}_p{r['number']}"; r["journal_unseen"] = cand.get(r["doc"], {}).get("journal_unseen")
@@ -231,7 +237,7 @@ def select(n_pages: int, per_kind: int) -> None:
            "documents": len({r["doc"] for r in pages}), "pages": pages,
            "kinds": dict(Counter(r["kind"] for r in pages).most_common()),
            "kinds_available": dict(Counter(r["kind"] for r in rows).most_common())}
-    (LAB / "check_pages.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    (LAB / f"{PFX}_pages.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"{len(pages)} pages from {out['documents']} documents ({sum(bool(r['journal_unseen']) for r in pages)} pages from never-seen journals); "
           f"{len(rows)} eligible pages in {len(docs)} documents")
     for k, v in out["kinds"].items():
@@ -243,8 +249,8 @@ def inputs() -> None:
     """As scripts/labeller_dev_inputs.py made the development pages: drawn by the crop box at 150 dpi, scaled to 1150
     wide with a 70-pixel margin, Azure's lines boxed in blue and numbered in red, lines.json in thousandths."""
     import cv2
-    out = LAB / "check_inputs"
-    pages = json.loads((LAB / "check_pages.json").read_text())["pages"]
+    out = LAB / f"{PFX}_inputs"
+    pages = json.loads((LAB / f"{PFX}_pages.json").read_text())["pages"]
     total = 0
     for p in pages:
         d = out / p["page"]
@@ -279,7 +285,11 @@ if __name__ == "__main__":
     ap.add_argument("--n", type=int, default=330); ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--what", choices=["json", "pdf"], default="json", help="fetch: Azure's JSON of the candidates, or the PDFs of the chosen pages")
     ap.add_argument("--pages", type=int, default=200); ap.add_argument("--per-kind", type=int, default=10)
+    ap.add_argument("--set", default="check", choices=["check", "unseen"], help="check: the exam (default); unseen: the development set from "
+                    "unseen journals (110 documents in /home/yassine/data/unseen_docs, fetched elsewhere; select and inputs only)")
     a = ap.parse_args()
+    if a.set == "unseen":
+        PFX, DOCS = "unseen", Path("/home/yassine/data/unseen_docs")
     if a.cmd == "candidates": candidates(a.n)
     elif a.cmd == "fetch": fetch(a.what, a.workers)
     elif a.cmd == "select": select(a.pages, a.per_kind)

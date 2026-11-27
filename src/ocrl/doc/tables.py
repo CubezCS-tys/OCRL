@@ -703,6 +703,12 @@ def _rule_bands(page, lines: list, kinds: list[str], taken: set[int], lh: float)
         cols = len(_columns(ls, x0, x1, lh)) - 1
         if not cap and cols < 3:
             continue
+        # With no caption naming a table, the structure step must have seen one: some lines called table cells,
+        # and not fewer than it called figure. Rules round a chart (its frame, the pie's legend and labels) or
+        # round a journal's masthead hold short scattered words in columns too.
+        n_tab = sum(kinds[i] == "table" for i in idx)
+        if not cap and (n_tab == 0 or n_tab < sum(kinds[i] == "figure" for i in idx)):
+            continue
         out.append(((int(x0), int(min(min(l.y0 for l in ls), top[1])), int(x1), int(max(max(l.y1 for l in ls), bot[3]))), idx, chain))
     return out
 

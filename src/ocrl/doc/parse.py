@@ -539,7 +539,7 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             if not pics:
                 break
             n = len(pics)
-            pics[:] = _not_cell_strokes(pics, found)
+            pics[:] = _table_heads(_not_cell_strokes(pics, found), found, ls, kinds, fig_of)
             if not _frames_of_drawings(pics, found, ls) and len(pics) == n:
                 break
             pics, fig_of, before = _picture_members(p, ls, kinds, pics)
@@ -642,6 +642,32 @@ def _not_cell_strokes(pics: list, found: list) -> list:
     return [q for k, q in enumerate(pics) if k not in drop]
 
 
+def _table_heads(pics: list, found: list, ls: list[TextLine], kinds: list[str], fig_of: dict[int, int]) -> list:
+    """A table's ruling taken for a drawing: where a table's frame touches its words (an underlined caption, a
+    header row whose rules run into the letters) the cleaner cannot lift it as ruled lines, and the frame with
+    its header comes out as one sprawling thin stroke. Such a "drawing" stands on a table found from the rows
+    below or above it, as wide as it (its columns run on), and the words inside it are, to the structure step,
+    table cells. It is part of the table, not a picture. The pictures without them."""
+    if not found or not fig_of:
+        return pics
+    lh = float(np.median([l.y1 - l.y0 for l in ls])) if ls else 0.0
+    drop = set()
+    for k, (_, b, kind) in enumerate(pics):
+        if kind != "drawing":
+            continue
+        idx = [i for i, kk in fig_of.items() if kk == k]
+        if not idx or sum(kinds[i] in ("table", "table_caption") for i in idx) < 0.5 * len(idx):
+            continue
+        for t in found:
+            tx0, ty0, tx1, ty1 = t.box
+            across = min(b[2], tx1) - max(b[0], tx0)
+            gap = max(ty0 - b[3], b[1] - ty1, 0)
+            if across > 0.8 * min(b[2] - b[0], tx1 - tx0) and gap < 2 * lh:
+                drop.add(k)
+                break
+    return [q for k, q in enumerate(pics) if k not in drop]
+
+
 def _frames_of_drawings(pics: list, found: list, ls: list[TextLine]) -> bool:
     """A map is often printed in a ruled frame with its graticule (degrees along the edges) between frame and
     map: the cleaner's drawing box holds the map alone, and the frame's rules made a ruled "table" of the
@@ -696,6 +722,10 @@ def _picture_members(p: PageInfo, ls: list[TextLine], kinds: list[str], pics: li
         boxes = list(getattr(p, "pictures", []) or [])
         drawings = {tuple(d) for d in getattr(p, "drawings", []) or []}
         pics = [(p.number, tuple(int(v) for v in b), "drawing" if tuple(b) in drawings else "photograph") for b in boxes]
+        # an ornamental border printed round the whole page is found as one big thin stroke: it frames the page's
+        # text, it is not a picture of it (clean._drawings no longer lists one; pages read before may)
+        from .tables import page_border
+        pics = [q for q in pics if not (q[2] == "drawing" and page_border(q[1], p.width, p.height))]
         # a picture inside another (a legend's swatch inside a map) is part of it
         within = lambda a, b: a is not b and a[0] >= b[0] and a[1] >= b[1] and a[2] <= b[2] and a[3] <= b[3]
         pics = [q for q in pics if not any(within(q[1], o[1]) for o in pics)]
