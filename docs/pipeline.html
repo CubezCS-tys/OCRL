@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OCRL: how the parser's models fit together</title>
+<title>OCRL pipeline</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
 <style>
 :root { --bg:#f5f7fa; --surface:#fff; --fg:#151b23; --muted:#586374; --line:#d3d9e2; --azure:#1464c8; --good:#1c7448; --bad:#b3261e; --warn:#9a5b00; --old:#8a94a3;
@@ -82,7 +82,7 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
 #pipe[data-view="all"] .idea { display:inline; }
 #pipe:not([data-view="today"]) .iX { display:inline; }
 #pipe .replaced { transition:opacity .2s; }
-#pipe[data-view="A"] .replaced { opacity:.28; }
+#pipe[data-view="A"] .replaced { opacity:.55; }
 .sizes .sq-big { fill:var(--ideafill); stroke:var(--idea); stroke-width:1.5; stroke-dasharray:7 5; }
 .sizes .sq-m { fill:var(--azure); }
 .sizes .sq-sum { fill:var(--azure); }
@@ -95,7 +95,7 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
 <main>
 <header style="display:flex;flex-direction:column;gap:12px">
   <h1>How the parser's models fit together</h1>
-  <p class="lede">A scanned page goes in and a typed, ordered document comes out, with no outside service. Three small trained models do the work, with rules between them. The structure model is the weak part, and it is taught by other models rather than by people. The purple dashed boxes are places a vision-language model such as Qwen could be added. None of them is built yet.</p>
+  <p class="lede">A scanned page goes in and a typed, ordered document comes out, with no outside service. Updated at the end of 27 November 2026. There are now two versions. The <b>laptop version</b> uses small trained models with rules between them: a line finder, a line reader, and two structure models. The <b>GPU version</b> is the same, except that a fine-tuned Qwen3.5-9B, running on a rented GPU, does the structure step. The small structure models answer for any line Qwen leaves out. The purple dashed boxes are places Qwen could still be added. They are not built.</p>
 </header>
 
 <section>
@@ -104,12 +104,12 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
       <span><i class="sw rule"></i>rules, no training</span>
       <span><i class="sw model"></i>trained model, working today</span>
       <span><i class="sw teach"></i>teaching loop</span>
-      <span><i class="sw test"></i>being tested now</span>
+      <span><i class="sw test"></i>measured today</span>
       <span><i class="sw idea"></i>idea, not built</span>
     </div>
     <div class="views" role="group" aria-label="Show the pipeline">
-      <button data-v="today" class="today">Today</button>
-      <button data-v="A">Qwen as A: structure</button>
+      <button data-v="today" class="today">Laptop version</button>
+      <button data-v="A" class="today">GPU version: Qwen structure</button>
       <button data-v="B">B: teacher</button>
       <button data-v="C">C: first look</button>
       <button data-v="D">D: tables</button>
@@ -119,7 +119,7 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
   <p id="viewnote"></p>
 
   <figure>
-<svg id="pipe" data-view="today" viewBox="0 0 1300 1040" role="img" aria-label="The parsing pipeline from scanned page to parsed document: page cleaning (rules), line finder (1.1M-weight model), ink map and layout (rules), line reader (8.4M-weight model), structure model (4.85M weights, the weak part), output. A teaching loop on the right feeds the structure model: earlier Gemini labels, Claude Haiku as the bulk labeller, and three judge models that score it. Dashed boxes on the left and right show where a Qwen vision-language model could attach.">
+<svg id="pipe" data-view="today" viewBox="0 0 1300 1040" role="img" aria-label="The parsing pipeline from scanned page to parsed document: page cleaning (rules), line finder (1.1M-weight model), ink map and layout (rules), line reader (8.4M-weight model), structure step, output. In the laptop version the structure step is two small models (4.85M weights each) plus rules; in the GPU version it is a fine-tuned Qwen3.5-9B, with the small models as fallback. A teaching loop on the right shows how the structure models are taught and judged by other models. Dashed boxes show where Qwen could still attach.">
 <defs>
   <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-fg"/></marker>
   <marker id="ah-t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-teach"/></marker>
@@ -127,7 +127,7 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
 </defs>
 
 <!-- column headings -->
-<text x="20" y="12" class="lbl pur idea iX">WHERE QWEN COULD ATTACH</text>
+<text x="20" y="12" class="lbl pur idea iX">WHERE QWEN IS OR COULD BE</text>
 
 <!-- ============ MAIN PIPELINE (x 280..764) ============ -->
 <!-- 0 input -->
@@ -177,7 +177,7 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
   <text x="296" y="432" class="ttl">3  Ink map and layout</text>
   <text x="296" y="451" class="txt">finds every connected blob of ink</text>
   <text x="296" y="467" class="txt">attaches letters and their dots to the found lines</text>
-  <text x="296" y="483" class="txt">finds columns from white space; reads them right to left</text>
+  <text x="296" y="483" class="txt">finds columns; right to left (Latin pages left to right)</text>
   <!-- glyph: two columns, read right to left -->
   <rect x="694" y="420" width="24" height="56" rx="2" class="glyph"/>
   <rect x="724" y="420" width="24" height="56" rx="2" class="glyph"/>
@@ -208,27 +208,22 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
 
 <!-- 5 structure -->
 <g class="replaced">
-  <rect x="280" y="692" width="484" height="200" rx="6" class="box-weak"/>
-  <text x="296" y="712" class="tag model">TRAINED MODEL · 4.85 MILLION WEIGHTS</text>
-  <rect x="560" y="701" width="188" height="16" rx="3" class="chip-weak"/>
-  <text x="654" y="713" text-anchor="middle" class="chip-weak-t">WEAK PART · CURRENT FOCUS</text>
-  <text x="296" y="732" class="ttl">5  Structure model</text>
-  <text x="296" y="751" class="txt">a transformer over all the lines of a page at once</text>
-  <text x="296" y="767" class="dim">each line arrives as its box (26 numbers)</text>
-  <text x="296" y="783" class="dim">+ its first 24 and last 10 characters</text>
-  <text x="296" y="799" class="txt">says what each line is (27 types: paragraph,</text>
-  <text x="296" y="815" class="txt">heading, list item, table, footnote, running</text>
-  <text x="296" y="831" class="txt">head, ...), where each block begins; + list rule</text>
-  <text x="748" y="756" text-anchor="end" class="big weak">92.0%</text>
+  <rect x="280" y="692" width="484" height="200" rx="6" class="box-model"/>
+  <text x="296" y="712" class="tag model">TWO TRAINED MODELS · 4.85 MILLION WEIGHTS EACH</text>
+  <text x="296" y="732" class="ttl">5  Structure step (laptop version)</text>
+  <text x="296" y="751" class="txt">two transformers over all the lines of a page at once</text>
+  <text x="296" y="767" class="dim">each line: its box + its first and last characters</text>
+  <text x="296" y="783" class="txt">one decides where blocks start; both name each</text>
+  <text x="296" y="799" class="txt">line (27 types: paragraph, heading, list item,</text>
+  <text x="296" y="815" class="txt">table, footnote, running head, ...)</text>
+  <text x="296" y="835" class="txt">then rules: tables as grids, list marks, running</text>
+  <text x="296" y="851" class="txt">heads and notes across pages, figures as crops</text>
+  <text x="296" y="871" class="dim">in the GPU version: answers for lines Qwen leaves out</text>
+  <text x="748" y="756" text-anchor="end" class="big model">87.3%</text>
   <text x="748" y="773" text-anchor="end" class="dim">line types right,</text>
-  <text x="748" y="787" text-anchor="end" class="dim">judged pages</text>
-  <text x="748" y="805" text-anchor="end" class="txt" style="font-weight:600">94.9% after</text>
-  <text x="748" y="819" text-anchor="end" class="dim">Haiku retrain (3,294 pp.)</text>
-  <!-- tested: the eye -->
-  <rect x="292" y="842" width="460" height="40" rx="4" class="box-test"/>
-  <text x="302" y="858" class="tag test">BEING TESTED</text>
-  <text x="392" y="858" class="txt">an "eye": a small picture of every line as extra input</text>
-  <text x="302" y="874" class="dim">94.0% vs 93.7% without it, same run: no real gain yet. Bigger runs: pending</text>
+  <text x="748" y="787" text-anchor="end" class="dim">the exam, whole pipeline</text>
+  <text x="748" y="805" text-anchor="end" class="txt" style="font-weight:600">95.7%</text>
+  <text x="748" y="819" text-anchor="end" class="dim">on the 70 dev pages</text>
 </g>
 <line x1="522" y1="892" x2="522" y2="918" class="flow" marker-end="url(#ah)"/>
 <text x="530" y="910" class="lbl">typed lines, block starts</text>
@@ -249,7 +244,7 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
 
 <!-- ============ TEACHING LOOP (right) ============ -->
 <rect x="820" y="548" width="466" height="428" rx="8" class="panel"/>
-<text x="836" y="570" class="tag teach">HOW THE STRUCTURE MODEL IS TAUGHT · NO PERSON LABELS ANYTHING</text>
+<text x="836" y="570" class="tag teach">HOW THE STRUCTURE MODELS ARE TAUGHT · NO PERSON LABELS ANYTHING</text>
 
 <g>
   <rect x="850" y="584" width="425" height="56" rx="6" class="box-teach"/>
@@ -289,13 +284,14 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
 <!-- tested: Qwen on same 70 pages -->
 <g>
   <rect x="1085" y="806" width="190" height="154" rx="6" class="box-test"/>
-  <text x="1099" y="826" class="tag test">BEING TESTED</text>
-  <text x="1099" y="846" class="ttl" style="font-size:14px">Qwen VLM, no training</text>
-  <text x="1099" y="865" class="txt">open weights, rented GPU</text>
-  <text x="1099" y="881" class="txt">same 70 pages,</text>
-  <text x="1099" y="897" class="txt">same instructions</text>
-  <text x="1099" y="917" class="dim">scored against the judges</text>
-  <text x="1099" y="940" class="txt" style="font-weight:600">result: pending</text>
+  <text x="1099" y="826" class="tag test">MEASURED TODAY</text>
+  <text x="1099" y="846" class="ttl" style="font-size:14px">Qwen3.5-9B, 70 pages</text>
+  <text x="1099" y="865" class="dim">line types, given Azure's lines</text>
+  <text x="1099" y="883" class="txt">no training: 86.3%</text>
+  <text x="1099" y="899" class="txt">400 pages: 91.4%</text>
+  <text x="1099" y="915" class="txt">1,190 pages: 93.8%</text>
+  <text x="1099" y="931" class="txt" style="font-weight:600">3,704 pages: 96.2%</text>
+  <text x="1099" y="949" class="dim">trained on labels from above</text>
 </g>
 <line x1="1040" y1="874" x2="1083" y2="874" class="flow-teach" marker-end="url(#ah-t)"/>
 
@@ -319,9 +315,9 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
   <rect x="20" y="392" width="230" height="106" rx="6" class="box-idea"/>
   <text x="34" y="412" class="tag pur">IDEA D · TABLES</text>
   <text x="34" y="432" class="ttl">Qwen reads tables</text>
-  <text x="34" y="451" class="txt">as rows and cells, where today</text>
-  <text x="34" y="467" class="txt">they come out cell by cell,</text>
-  <text x="34" y="483" class="txt">column by column</text>
+  <text x="34" y="451" class="txt">rules now give tables as grids</text>
+  <text x="34" y="467" class="txt">(order inside tables 90.3% on</text>
+  <text x="34" y="483" class="txt">the exam); Qwen here: not built</text>
   <path d="M278,445 H252" class="flow-idea" marker-end="url(#ah-i)"/>
 </g>
 
@@ -339,21 +335,23 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
 
 <!-- A: structure -->
 <g class="idea iA">
-  <rect x="20" y="692" width="230" height="200" rx="6" class="box-idea"/>
-  <text x="34" y="712" class="tag pur">IDEA A · STRUCTURE STEP</text>
-  <text x="34" y="732" class="ttl">Qwen in place of box 5</text>
-  <text x="34" y="751" class="txt">sees the whole page picture,</text>
-  <text x="34" y="767" class="txt">not 26 numbers and 34</text>
-  <text x="34" y="783" class="txt">characters per line</text>
-  <text x="34" y="807" class="txt" style="font-weight:600">about 1 to 3 s a page</text>
-  <text x="34" y="823" class="dim">an estimate, not measured;</text>
-  <text x="34" y="839" class="dim">the whole pipeline today takes</text>
-  <text x="34" y="855" class="dim">0.6 s a page on an RTX 5090</text>
-  <text x="34" y="878" class="dim">billions of weights (see below)</text>
-  <path d="M280,648 H135 V690" class="flow-idea" marker-end="url(#ah-i)"/>
-  <text x="143" y="672" class="lbl pur">page picture + lines</text>
-  <path d="M135,892 V970 H278" class="flow-idea" marker-end="url(#ah-i)"/>
-  <text x="143" y="960" class="lbl pur">typed blocks, in order</text>
+  <rect x="20" y="692" width="230" height="200" rx="6" class="box-model"/>
+  <text x="34" y="712" class="tag model">BUILT · GPU VERSION</text>
+  <text x="34" y="732" class="ttl">5  Qwen structure step</text>
+  <text x="34" y="751" class="txt">Qwen3.5-9B + our adapter,</text>
+  <text x="34" y="767" class="txt">served on the rented GPU</text>
+  <text x="34" y="783" class="dim">sees the page with our lines</text>
+  <text x="34" y="799" class="dim">outlined and numbered, + text</text>
+  <text x="34" y="827" class="big model">92.7%</text>
+  <text x="140" y="814" class="dim">line types,</text>
+  <text x="140" y="828" class="dim">the exam</text>
+  <text x="34" y="850" class="dim">blocks exactly right 83.7%</text>
+  <text x="34" y="866" class="dim">(laptop version 75.1%)</text>
+  <text x="34" y="882" class="dim">left-out lines: small pair</text>
+  <path d="M280,648 H135 V690" class="flow" marker-end="url(#ah)"/>
+  <text x="143" y="672" class="lbl">page picture + lines</text>
+  <path d="M135,892 V970 H278" class="flow" marker-end="url(#ah)"/>
+  <text x="143" y="960" class="lbl">typed blocks, in order</text>
 </g>
 
 <!-- B: teacher -->
@@ -369,13 +367,13 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
   <text x="1172" y="794" text-anchor="end" class="lbl pur">if it holds up</text>
 </g>
 </svg>
-    <figcaption>Black arrows are what one page passes through, top to bottom. Green arrows are teaching: labels go into the structure model to train it, and the judges score it. Pick a Qwen placement above to see where it would attach. In view A the structure model fades because Qwen would replace it. The teaching loop would then only be needed to score Qwen.</figcaption>
+    <figcaption>Black arrows are what one page passes through, top to bottom. Green arrows are teaching: labels go into the structure models to train them, and the judges score them. In the GPU view, Qwen takes the structure step on the left, and the small structure models fade because they only answer for lines Qwen leaves out. Qwen was fine-tuned on the same model-made labels. B, C and D are still ideas.</figcaption>
   </figure>
 
   <div class="tiles">
-    <div class="tile"><div class="who">Whole pipeline, text vs Azure</div><div class="big">4.35%</div><div class="sub">characters differ, 50 unseen documents (4.00% on 100 more)</div></div>
-    <div class="tile"><div class="who">Speed on an RTX 5090</div><div class="big">0.6 s</div><div class="sub">a page, about</div></div>
-    <div class="tile"><div class="who">Speed on the owner's laptop</div><div class="big">6 s</div><div class="sub">a page, about. Line finder 3.0 s, reader 2.2 s</div></div>
+    <div class="tile"><div class="who">Line types right, the exam</div><div class="big">87.3%</div><div class="sub">laptop version; 92.7% GPU version; 75.7% this morning. 200 pages from unseen journals</div></div>
+    <div class="tile"><div class="who">Whole pipeline, text vs Azure</div><div class="big">2.42%</div><div class="sub">characters differ on the exam (2.80% this morning). Agreement with Azure, not accuracy</div></div>
+    <div class="tile"><div class="who">Speed on the owner's laptop</div><div class="big">6 s</div><div class="sub">a page, about, measured this morning. Line finder 3.0 s, reader 2.2 s</div></div>
     <div class="tile"><div class="who">Outside services</div><div class="big">none</div><div class="sub">at parse time. Outside models are used only to teach and to judge</div></div>
   </div>
 </section>
@@ -383,87 +381,88 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
 <section>
   <h2>How big the models are, drawn to the same scale</h2>
   <figure>
-<svg class="sizes" viewBox="0 0 1000 340" role="img" aria-label="Squares whose area is proportional to the number of weights: the three trained models together (14.35 million) are a small corner of a one-billion-weight square, and a vision-language model has several billion.">
+<svg class="sizes" viewBox="0 0 1000 340" role="img" aria-label="Squares whose area is proportional to the number of weights: the four small trained models together (19.2 million) are a small corner of a one-billion-weight square; the Qwen model in the GPU version has about 9 billion.">
   <rect x="30" y="20" width="300" height="300" class="sq-big"/>
   <text x="180" y="168" text-anchor="middle" class="ttl" style="fill:var(--idea)">1 billion weights</text>
-  <text x="180" y="188" text-anchor="middle" class="dim">a vision-language model such as</text>
-  <text x="180" y="204" text-anchor="middle" class="dim">Qwen has several billion:</text>
-  <text x="180" y="220" text-anchor="middle" class="dim">several squares this size</text>
-  <!-- all three together in the corner: 14.35M -> side 37.9 -->
-  <rect x="30" y="282.1" width="37.9" height="37.9" class="sq-sum"/>
-  <path d="M68,300 H150" class="flow" marker-start="url(#ahs)" style="stroke-width:1"/>
-  <text x="154" y="304" class="lbl">all three of ours together</text>
+  <text x="180" y="188" text-anchor="middle" class="dim">the GPU version's Qwen3.5-9B</text>
+  <text x="180" y="204" text-anchor="middle" class="dim">has about 9 billion:</text>
+  <text x="180" y="220" text-anchor="middle" class="dim">nine squares this size</text>
+  <!-- all four together in the corner: 19.2M -> side 41.6 -->
+  <rect x="30" y="278.4" width="41.6" height="41.6" class="sq-sum"/>
+  <path d="M72,300 H150" class="flow" marker-start="url(#ahs)" style="stroke-width:1"/>
+  <text x="154" y="304" class="lbl">all four of ours together</text>
   <defs><marker id="ahs" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-fg"/></marker></defs>
 
   <!-- each at true scale: 1B = 300x300 = 90000 px^2 -->
   <g transform="translate(420,40)">
     <rect x="0" y="0" width="27.5" height="27.5" class="sq-m"/>
     <text x="48" y="12" class="txt" style="font-weight:600">Line reader · 8.4 million</text>
-    <text x="48" y="28" class="dim">reads text; the largest of the three</text>
+    <text x="48" y="28" class="dim">reads text; the largest of our four</text>
     <rect x="3.3" y="70" width="20.9" height="20.9" class="sq-m"/>
-    <text x="48" y="78" class="txt" style="font-weight:600">Structure model · 4.85 million</text>
-    <text x="48" y="94" class="dim">types and blocks</text>
+    <text x="48" y="78" class="txt" style="font-weight:600">Structure models · 4.85 million each, two of them</text>
+    <text x="48" y="94" class="dim">types and blocks (laptop version)</text>
     <rect x="8.8" y="134" width="9.9" height="9.9" class="sq-m"/>
     <text x="48" y="138" class="txt" style="font-weight:600">Line finder · 1.1 million</text>
     <text x="48" y="154" class="dim">finds the lines</text>
     <line x1="0" y1="190" x2="520" y2="190" class="axis"/>
-    <text x="0" y="216" class="txt">Area is proportional to weights. One billion weights is about 70 times all three of ours together.</text>
-    <text x="0" y="238" class="dim">Size is not quality: the 8.4-million reader makes fewer errors (1.4%)</text>
-    <text x="0" y="254" class="dim">than the earlier Qwen-based reader (3.0%).</text>
-    <text x="0" y="276" class="dim">A big model costs time and a GPU on every page, which adds up over 30 million pages.</text>
+    <text x="0" y="216" class="txt">Area is proportional to weights. One billion is about 52 times all four of ours together.</text>
+    <text x="0" y="238" class="dim">Size is not always quality: the 8.4-million reader makes fewer errors (1.4%)</text>
+    <text x="0" y="254" class="dim">than the earlier Qwen-based reader (3.0%). For structure, size did help:</text>
+    <text x="0" y="270" class="dim">on the exam, given Azure's lines, Qwen 97.3% of line types, the small pair 87.8%.</text>
+    <text x="0" y="292" class="dim">A big model costs time and a GPU on every page, which adds up over 30 million pages.</text>
   </g>
 </svg>
-    <figcaption>Squares at the same scale, so the area shows the number of weights. A Qwen model's exact size is not fixed here because it depends on which version is chosen. Every version has billions of weights.</figcaption>
+    <figcaption>Squares at the same scale, so the area shows the number of weights. The Qwen square is not drawn at full size: it would be nine of the one-billion squares. Its adapter, the part trained here, is small and is not counted separately.</figcaption>
   </figure>
 </section>
 
 <section>
   <h2>Where the time goes</h2>
   <figure>
-<svg class="speed" viewBox="0 0 1000 210" role="img" aria-label="Seconds per page: about 6 on the laptop, of which line finder 3.0 and reader 2.2; about 0.6 for the whole pipeline on an RTX 5090; Qwen as the structure step alone estimated at 1 to 3 seconds, not measured.">
-  <!-- scale: 0..6 s over x 260..860 => 100 px per second -->
+<svg class="speed" viewBox="0 0 1000 210" role="img" aria-label="Seconds per page: about 6 on the laptop this morning, of which line finder 3.0 and reader 2.2; about 0.6 for the whole pipeline on an RTX 5090; the Qwen structure step alone took between 2.5 and 8.9 seconds a page in today's scoring runs.">
+  <!-- scale: 0..9 s over x 260..890 => 70 px per second -->
   <line x1="260" y1="20" x2="260" y2="170" class="axis"/>
   <text x="250" y="44" text-anchor="end" class="txt">Laptop, whole pipeline</text>
-  <rect x="260" y="28" width="300" height="24" class="seg1"/><text x="410" y="45" text-anchor="middle" class="txt" style="fill:var(--surface);font-weight:600">line finder 3.0 s</text>
-  <rect x="560" y="28" width="220" height="24" class="seg2"/><text x="670" y="45" text-anchor="middle" class="txt" style="fill:var(--surface);font-weight:600">reader 2.2 s</text>
-  <rect x="780" y="28" width="80" height="24" class="seg3"/>
-  <text x="868" y="45" class="dim">rest · about 6 s total</text>
+  <rect x="260" y="28" width="210" height="24" class="seg1"/><text x="365" y="45" text-anchor="middle" class="txt" style="fill:var(--surface);font-weight:600">line finder 3.0 s</text>
+  <rect x="470" y="28" width="154" height="24" class="seg2"/><text x="547" y="45" text-anchor="middle" class="txt" style="fill:var(--surface);font-weight:600">reader 2.2 s</text>
+  <rect x="624" y="28" width="56" height="24" class="seg3"/>
+  <text x="688" y="45" class="dim">rest · about 6 s total</text>
 
   <text x="250" y="94" text-anchor="end" class="txt">RTX 5090, whole pipeline</text>
-  <rect x="260" y="78" width="60" height="24" class="gpu"/>
-  <text x="328" y="95" class="dim">about 0.6 s</text>
+  <rect x="260" y="78" width="42" height="24" class="gpu"/>
+  <text x="310" y="95" class="dim">about 0.6 s, without Qwen</text>
 
-  <text x="250" y="144" text-anchor="end" class="txt" style="fill:var(--idea)">Idea A, Qwen structure step</text>
-  <rect x="360" y="128" width="200" height="24" class="est"/>
-  <text x="460" y="145" text-anchor="middle" class="lbl pur">1 to 3 s, estimate</text>
-  <text x="568" y="145" class="dim">not measured; for that one step alone</text>
+  <text x="250" y="144" text-anchor="end" class="txt">Qwen structure step alone</text>
+  <rect x="435.7" y="128" width="444.5" height="24" class="est" style="fill:var(--modelfill);stroke:var(--azure);stroke-dasharray:none"/>
+  <text x="658" y="145" text-anchor="middle" class="lbl" style="fill:var(--fg)">2.5 to 8.9 s, measured in three scoring runs</text>
 
-  <g class="dim"><text x="260" y="190" text-anchor="middle">0</text><text x="360" y="190" text-anchor="middle">1 s</text><text x="460" y="190" text-anchor="middle">2 s</text><text x="560" y="190" text-anchor="middle">3 s</text><text x="660" y="190" text-anchor="middle">4 s</text><text x="760" y="190" text-anchor="middle">5 s</text><text x="860" y="190" text-anchor="middle">6 s</text></g>
+  <g class="dim"><text x="260" y="190" text-anchor="middle">0</text><text x="330" y="190" text-anchor="middle">1 s</text><text x="400" y="190" text-anchor="middle">2 s</text><text x="470" y="190" text-anchor="middle">3 s</text><text x="540" y="190" text-anchor="middle">4 s</text><text x="610" y="190" text-anchor="middle">5 s</text><text x="680" y="190" text-anchor="middle">6 s</text><text x="750" y="190" text-anchor="middle">7 s</text><text x="820" y="190" text-anchor="middle">8 s</text><text x="890" y="190" text-anchor="middle">9 s</text></g>
 </svg>
-    <figcaption>Seconds per page. On the laptop the two trained image models take most of the time. On its own, idea A would take longer than the whole pipeline does today on the GPU.</figcaption>
+    <figcaption>Seconds per page. The laptop and RTX 5090 figures were measured this morning. The Qwen figures are the structure step's share of the time in today's scoring runs: 2.5 s a page on the 150 unseen development pages, 7.7 s on the exam and 8.9 s on the 70 development pages. Those runs sent whole documents at once and could reuse saved answers, so they are not a clean timing.</figcaption>
   </figure>
 </section>
 
 <section>
   <h2>Known gaps today</h2>
   <ul>
-    <li>Tables are read column by column, not as rows and cells. Idea D aims here.</li>
-    <li>English pages are put in order as if they were Arabic (columns right to left).</li>
+    <li>Pages with tables and charts are the weakest kind on the exam: 84.5% of line types and 67.0% of blocks exactly right with the GPU version. Tables themselves now come out as grids.</li>
+    <li>Magazine layouts and title pages are still weak, and dithered photographs are sometimes read as text.</li>
+    <li>Formulas are shown as crops of the scan, not transcribed.</li>
     <li>Vowelled text, handwriting and filled forms are not handled. Idea C would at least send such documents down another route.</li>
   </ul>
-  <p class="note">Pending, not measured yet: the longer and bigger runs of the structure model with an eye, and Qwen with no training on the 70 judged pages. Idea A's speed of 1 to 3 seconds a page is an estimate.</p>
+  <p class="note">Since this morning, Latin-script pages are read left to right, and Qwen has been measured and built in as the GPU version's structure step (idea A). The full results are on the <a href="results_2026-11-27.html" style="color:var(--azure)">results page</a>.</p>
 </section>
 </main>
 
 <script>
 (function () {
   var notes = {
-    today: "Today: three small trained models (blue) with rules between them (grey). The structure model is the weak part, and the green loop on the right is how it gets taught without people. Two things are being tested (amber): giving it an eye, and Qwen on the 70 judged pages.",
-    A: "A. Qwen replaces the structure model. It gets the page picture and the lines found and read by steps 2 to 4, and gives back typed blocks in order. It would see the whole page, not 26 numbers and a few characters per line, but it would be slower, roughly 1 to 3 s a page (estimate). The judges would still be needed to score it.",
-    B: "B. Qwen becomes the teacher, in place of or beside Haiku. The small structure model stays in the pipeline. Its labels come from open weights the owner controls, with no charge per page. The test running now, on the same 70 pages, decides whether it holds up.",
+    today: "Laptop version: small trained models (blue) with rules between them (grey), all on the laptop. Two small structure models plus rules give 87.3% of line types right on the exam (200 pages from unseen journals). The green loop on the right is how they are taught without people. Amber: Qwen's results on the 70 judged pages.",
+    A: "GPU version, built today: a fine-tuned Qwen3.5-9B on a rented GPU takes the structure step. It sees the page picture with our lines outlined and numbered, plus their text, and gives back typed blocks in reading order. Any line it leaves out, and any page it fails on, gets the small structure models' answer. The viewer says how many. On the exam: 92.7% of line types and 83.7% of blocks exactly right (laptop version 87.3% and 75.1%).",
+    B: "B. Qwen becomes the teacher, in place of or beside Haiku, for the small structure models. Its labels would come from open weights the owner controls, with no charge per page. Not built: today Qwen was used as the structure step itself (the GPU version), not as a teacher.",
     C: "C. Qwen takes a first look at each document before anything else: what kind of document it is, and which route it should take. Documents the pipeline cannot handle yet (forms, handwriting) would be sent another way instead of failing silently.",
-    D: "D. Qwen reads table regions as rows and cells. Today the pipeline reads them cell by cell, column by column. The layout step would hand table areas to it.",
-    all: "All four placements at once. The red box marks where not to put it: as the line reader, the small model already makes fewer errors than a Qwen-based reader did."
+    D: "D. Qwen reads table regions as rows and cells. Since today, rules already give tables as grids, with rows, columns, merged cells and continuations over a page break. Reading order inside tables on the exam went from 65.5% to 90.3%. Not built.",
+    all: "The built GPU version (A) and the three remaining ideas together. The red box marks where not to put Qwen: as the line reader, the small model already makes fewer errors than a Qwen-based reader did."
   };
   var svg = document.getElementById("pipe");
   var note = document.getElementById("viewnote");
@@ -472,7 +471,7 @@ ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; 
     if (!notes[v]) v = "today";
     svg.setAttribute("data-view", v);
     note.textContent = notes[v];
-    note.className = v === "today" ? "today" : "";
+    note.className = (v === "today" || v === "A") ? "today" : "";
     for (var i = 0; i < buttons.length; i++) buttons[i].setAttribute("aria-pressed", buttons[i].getAttribute("data-v") === v ? "true" : "false");
   }
   for (var i = 0; i < buttons.length; i++) buttons[i].addEventListener("click", function () { var v = this.getAttribute("data-v"); history.replaceState(null, "", "#" + v); show(v); });

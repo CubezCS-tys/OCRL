@@ -3,133 +3,460 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OCRL: where the local parser stands, 27 November 2026</title>
+<title>OCRL results, 27 November 2026</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
 <style>
 :root { --bg:#f5f7fa; --surface:#fff; --fg:#151b23; --muted:#586374; --line:#d3d9e2; --azure:#1464c8; --good:#1c7448; --bad:#b3261e; --warn:#9a5b00; --old:#8a94a3;
+  --s-morning:#7d8796; --s-laptop:#1464c8; --s-gpu:#c25e00; --grid:#e3e7ed;
   --display:"Space Grotesk","Segoe UI",system-ui,sans-serif; --body:"Inter","Segoe UI",system-ui,sans-serif; }
-@media (prefers-color-scheme: dark) { :root { --bg:#0e1217; --surface:#161b22; --fg:#e5e9ef; --muted:#98a3b3; --line:#2a323e; --azure:#6aa9f0; --good:#62cf9b; --bad:#f28b82; --warn:#e0a84a; --old:#6c7786; color-scheme:dark; } }
+@media (prefers-color-scheme: dark) { :root { --bg:#0e1217; --surface:#161b22; --fg:#e5e9ef; --muted:#98a3b3; --line:#2a323e; --azure:#6aa9f0; --good:#62cf9b; --bad:#f28b82; --warn:#e0a84a; --old:#6c7786;
+  --s-morning:#8a94a3; --s-laptop:#4f8fdc; --s-gpu:#d9822b; --grid:#232a34; color-scheme:dark; } }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 var(--body); }
-main { max-width:980px; margin:0 auto; padding:36px 20px 80px; display:flex; flex-direction:column; gap:36px; }
-h1,h2 { font-family:var(--display); font-weight:600; margin:0; text-wrap:balance; }
-h1 { font-size:29px; line-height:1.15; } h2 { font-size:20px; }
+main { max-width:980px; margin:0 auto; padding:36px 16px 80px; display:flex; flex-direction:column; gap:40px; }
+h1,h2,h3 { font-family:var(--display); font-weight:600; margin:0; text-wrap:balance; }
+h1 { font-size:29px; line-height:1.15; } h2 { font-size:21px; } h3 { font-size:16px; }
 p { margin:0; max-width:72ch; } .lede { color:var(--muted); font-size:16px; }
+.answer { font-size:18px; line-height:1.5; max-width:68ch; }
 section { display:flex; flex-direction:column; gap:14px; }
-.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
 .tile { background:var(--surface); border:1.5px solid var(--line); border-radius:5px; padding:14px 16px; display:flex; flex-direction:column; gap:2px; }
 .tile .who { font-size:12px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); }
-.tile .big { font:600 32px/1.15 var(--display); font-variant-numeric:tabular-nums; } .tile .sub { color:var(--muted); font-size:13.5px; }
+.tile .big { font:600 30px/1.15 var(--display); font-variant-numeric:tabular-nums; } .tile .sub { color:var(--muted); font-size:13.5px; }
 .tile.best { border-color:var(--good); } .tile.best .big { color:var(--good); }
-figure { margin:0; background:var(--surface); border:1px solid var(--line); border-radius:5px; padding:16px; display:flex; flex-direction:column; gap:12px; }
+figure { margin:0; background:var(--surface); border:1px solid var(--line); border-radius:5px; padding:16px; display:flex; flex-direction:column; gap:12px; min-width:0; }
 figcaption { color:var(--muted); font-size:13.5px; max-width:80ch; }
 .bars { display:grid; grid-template-columns:max-content minmax(0,1fr) max-content; gap:8px 12px; align-items:center; font-size:14px; }
 .bars .t { height:16px; } .bars .b { height:100%; border-radius:0 4px 4px 0; min-width:2px; background:var(--azure); }
 .bars .v { font-weight:600; font-variant-numeric:tabular-nums; text-align:right; }
 .b.good { background:var(--good); } .b.old { background:var(--old); } .b.bad { background:var(--bad); }
+.scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
 table { width:100%; border-collapse:collapse; font-size:14px; }
 th,td { text-align:left; padding:6px 12px 6px 0; border-top:1px solid var(--line); vertical-align:top; }
-th { color:var(--muted); font-weight:500; font-size:12.5px; } td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
-ul { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; max-width:72ch; }
+th { color:var(--muted); font-weight:500; font-size:12.5px; } td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+td.now { font-weight:600; }
+table.head td.n { font-size:15px; }
+@media (max-width:560px) { table.head th, table.head td { padding-right:8px; } table.head th.n { white-space:normal; } table.head td.n { font-size:14px; } }
+ul, ol { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px; max-width:72ch; }
+dl { margin:0; display:grid; grid-template-columns:minmax(0,max-content) minmax(0,1fr); gap:6px 16px; font-size:14px; max-width:86ch; }
+dt { font-weight:600; } dd { margin:0; color:var(--muted); }
+@media (max-width:560px) { dl { grid-template-columns:1fr; gap:2px; } dd { margin-bottom:8px; } }
 .note { border-left:3px solid var(--warn); padding:2px 0 2px 12px; color:var(--muted); }
-code { font:13px ui-monospace,monospace; }
+code { font:13px ui-monospace,monospace; overflow-wrap:anywhere; }
+.chip { display:inline-block; font:600 11px var(--body); letter-spacing:.06em; text-transform:uppercase; padding:1px 7px; border-radius:3px; border:1.5px solid; vertical-align:2px; margin-right:6px; }
+.chip.sup { color:var(--warn); border-color:var(--warn); }
+.chip.true { color:var(--good); border-color:var(--good); }
+.morning { border-top:2px solid var(--line); padding-top:28px; gap:32px; }
+.morning > p.lede { margin-top:-18px; }
+.morning section { gap:12px; }
+
+/* dot chart */
+.legend { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:13px; color:var(--muted); align-items:center; }
+.legend span { display:inline-flex; align-items:center; gap:6px; }
+.legend svg { width:14px; height:14px; }
+.toggle { display:flex; gap:6px; flex-wrap:wrap; }
+.toggle button { font:500 13.5px var(--body); color:var(--fg); background:var(--surface); border:1.5px solid var(--line); border-radius:4px; padding:5px 12px; cursor:pointer; }
+.toggle button[aria-pressed="true"] { border-color:var(--s-laptop); }
+.chart-top { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px 20px; align-items:center; }
+svg text { font-family:var(--body); }
+.c-lbl { font-size:13px; fill:var(--fg); } .c-dim { font-size:11.5px; fill:var(--muted); } .c-val { font-size:12.5px; font-weight:600; fill:var(--fg); font-variant-numeric:tabular-nums; }
+.c-grid { stroke:var(--grid); stroke-width:1; } .c-track { stroke:var(--line); stroke-width:2; stroke-linecap:round; }
+.m-morning { fill:var(--surface); stroke:var(--s-morning); stroke-width:2; }
+.m-laptop { fill:var(--s-laptop); stroke:var(--surface); stroke-width:1.5; }
+.m-gpu { fill:var(--s-gpu); stroke:var(--surface); stroke-width:1.5; }
+.l-gpu { stroke:var(--s-gpu); stroke-width:2; fill:none; } .l-ref { stroke:var(--s-laptop); stroke-width:1.5; stroke-dasharray:5 4; }
+#tip { position:fixed; pointer-events:none; background:var(--surface); color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:6px 9px; font-size:12.5px; line-height:1.45; box-shadow:0 2px 8px rgba(0,0,0,.18); display:none; z-index:5; max-width:260px; }
+#bykind { width:100%; min-width:0; }
+#curve { width:100%; max-width:640px; height:auto; display:block; }
+details > summary { cursor:pointer; color:var(--muted); font-size:14px; }
 </style>
 </head>
 <body>
 <main>
 <header style="display:flex;flex-direction:column;gap:12px">
-  <h1>Where the local parser stands</h1>
-  <p class="lede">27 November 2026, after the first long working night. A scanned page now goes in and a typed, ordered document comes out with no Azure and no Gemini in the loop: a trained line finder, a line reader, and a structure model, on top of the ink-blob layout. This page records what was measured, on what, and what is still weak.</p>
+  <h1>Where the parser stands at the end of the day</h1>
+  <p class="lede">27 November 2026, evening. This page replaces the one written this morning. The morning's findings are kept at the bottom, each marked as still true or as replaced by today's work.</p>
 </header>
 
 <section>
-  <h2>Reading: how often a character is wrong</h2>
-  <p>Measured on 770 lines from inkscript experiment 103, where two readers typed each line from its image without knowing which system had proposed which reading, and a third settled their differences. So the truth is not Azure's text. Vowel marks are ignored for every reader alike.</p>
-  <div class="tiles">
-    <div class="tile"><div class="who">Azure</div><div class="big">1.85%</div><div class="sub">426 of 770 lines exactly right</div></div>
-    <div class="tile best"><div class="who">The owner's 8.4M reader</div><div class="big">1.37%</div><div class="sub">502 of 770 lines exactly right</div></div>
-    <div class="tile"><div class="who">OCRL line reader, trained tonight</div><div class="big">1.86%</div><div class="sub">436 of 770 lines exactly right</div></div>
-    <div class="tile"><div class="who">OCRL cluster reader (before)</div><div class="big">12.22%</div><div class="sub">121 of 770 lines exactly right</div></div>
+  <p class="answer">On 200 fresh pages from journals no model here had seen, the parser now labels <b>87.3%</b> of lines correctly on the laptop and <b>92.7%</b> on the GPU, up from 75.7% this morning. It also loses fewer lines, and tables now come out in reading order.</p>
+  <div class="scroll">
+  <table class="head">
+    <tr><th>The exam, 200 pages</th><th class="n">This morning</th><th class="n">Laptop now</th><th class="n">GPU now</th></tr>
+    <tr><td>Line types right</td><td class="n">75.7%</td><td class="n now">87.3%</td><td class="n now">92.7%</td></tr>
+    <tr><td>Blocks exactly right</td><td class="n">70.4%</td><td class="n now">75.1%</td><td class="n now">83.7%</td></tr>
+    <tr><td>Lines lost</td><td class="n">4.1%</td><td class="n now">2.4%</td><td class="n now">2.4%</td></tr>
+    <tr><td>Reading order inside tables</td><td class="n">65.5%</td><td class="n now">90.3%</td><td class="n now">91.2%</td></tr>
+    <tr><td>Text differing from Azure</td><td class="n">2.80%</td><td class="n now">2.42%</td><td class="n now">2.42%</td></tr>
+  </table>
   </div>
-  <table>
-    <tr><th>Lines</th><th class="n">Azure</th><th class="n">Owner's reader</th><th class="n">OCRL line reader</th></tr>
-    <tr><td>Printed before 2000</td><td class="n">3.43%</td><td class="n">2.32%</td><td class="n">3.01%</td></tr>
-    <tr><td>Printed from 2000 on</td><td class="n">1.01%</td><td class="n">0.60%</td><td class="n">0.93%</td></tr>
-    <tr><td>20,000 lines from 121 held-out journals, difference from Azure's text</td><td class="n">n/a</td><td class="n">0.41%</td><td class="n">0.31%</td></tr>
-  </table>
-  <p class="note">Both line readers are the same network (convolutions, a two-layer LSTM, CTC; 8 million weights). The owner's was trained on 2.74 million Azure-confident lines; OCRL's on 1.17 million, in about 50 minutes, stopping one pass short because of a bug in the schedule. The lines come from the owner's development documents, which their reader may have seen in training. The experiment's files do not say whether its three readers were people or vision models; their notes read like a model's, so treat this truth as model-read until shown otherwise. The readers were shown Azure's reading as one candidate and never the owner's reader's, which if anything favours Azure.</p>
+  <dl>
+    <dt>The exam</dt><dd>200 pages, one from each of 200 journals that no model here was trained on. Three independent models (Claude Haiku, Gemini Flash, Gemini Argon) labelled each line, and the majority's type is the reference (7,693 lines). Nothing was tuned on these pages; they were only scored.</dd>
+    <dt>Line types right</dt><dd>Share of the reference lines that we give the same type as the reference (paragraph, heading, footnote, table cell, running head, and so on). A lost line counts as wrong.</dd>
+    <dt>Blocks exactly right</dt><dd>Share of the reference's blocks (a paragraph, a table, one list item) that we produce with exactly the same lines, none missing and none extra.</dd>
+    <dt>Lines lost</dt><dd>Reference lines that fall inside no line we found, so nothing of them reaches the output.</dd>
+    <dt>Reading order inside tables</dt><dd>How often two lines that follow each other inside a table come in the reference's order.</dd>
+    <dt>Text differing from Azure</dt><dd>Characters where our reading differs from Azure's. This measures agreement with Azure, not accuracy: Azure makes mistakes too.</dd>
+  </dl>
+  <p><b>Laptop version:</b> runs entirely on the laptop. Two small structure models plus rules decide what each line is. <b>GPU version:</b> a rented GPU runs a fine-tuned Qwen3.5-9B for the structure step, and the small models handle any line it leaves out. Both versions find and read the lines the same way, so lines lost and text are the same in both.</p>
 </section>
 
 <section>
-  <h2>Finding lines, on 50 documents the line finder never saw</h2>
+  <h2>By kind of page, on the exam</h2>
   <figure>
-    <div class="bars">
-      <span>Trained line finder, when first plugged in</span><div class="t"><div class="b old" style="width:84.8%"></div></div><span class="v">84.8%</span>
-      <span>Rule-based lines, with tonight's fixes</span><div class="t"><div class="b old" style="width:85.6%"></div></div><span class="v">85.6%</span>
-      <span>Trained line finder, frozen pipeline</span><div class="t"><div class="b good" style="width:95.2%"></div></div><span class="v">95.2%</span>
+    <div class="chart-top">
+      <div class="legend" aria-label="Legend">
+        <span><svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" class="m-morning"/></svg>This morning</span>
+        <span><svg viewBox="0 0 14 14"><rect x="2" y="2" width="10" height="10" rx="1" class="m-laptop"/></svg>Laptop version now</span>
+        <span><svg viewBox="0 0 14 14"><path d="M7 1 L13 7 L7 13 L1 7 Z" class="m-gpu"/></svg>GPU version now</span>
+      </div>
+      <div class="toggle" role="group" aria-label="Measure">
+        <button data-m="types" aria-pressed="true">Line types right</button>
+        <button data-m="blocks" aria-pressed="false">Blocks exactly right</button>
+      </div>
     </div>
-    <figcaption>Share of Azure's lines matched by exactly one line of ours, 18,799 lines. In the frozen pipeline those lines hold 97.1% of the characters, and 94.1% of steps from one matched line to the next go forward in our reading order as they do in Azure's. The line finder alone, scored on its own held-out pages, finds 98.2% of lines.</figcaption>
+    <div id="bykind"></div>
+    <figcaption>The 14 kinds of page on the exam, weakest at the top for the GPU version, with the GPU version's figure at the right. The small number by each name is how many reference lines that kind has: kinds with few lines, such as title and cover pages, give shaky figures. Hover over a mark for its value. The same figures are in the table below.</figcaption>
+    <details>
+      <summary>The figures as a table</summary>
+      <div class="scroll"><table id="bykind-table"></table></div>
+    </details>
   </figure>
-  <p>On 100 further documents, from journals neither the line finder nor OCRL's reader was fitted on: 92.3% of lines one-to-one, holding 96.5% of the characters; reading order 96.1%.</p>
+  <p>The laptop version gained most on the kinds that were worst this morning: pages mixing tables, charts and shaded cells (51.9% to 82.3% of line types), title and cover pages (33.9% to 63.0%), and pages with tables. The GPU version gained most on two-column pages (79.9% to 98.4% of line types) and on title and cover pages. On two kinds, long justified paragraphs and dense two-column or magazine pages, the GPU version labels slightly fewer lines correctly than the laptop version, though it still gets more blocks exactly right.</p>
 </section>
 
 <section>
-  <h2>The whole pipeline: scan in, text out, compared with Azure's text</h2>
-  <figure>
-    <div class="bars">
-      <span>Midnight: rule-based lines, cluster reader</span><div class="t"><div class="b old" style="width:100%"></div></div><span class="v">17.0%</span>
-      <span>Owner's reader plugged in</span><div class="t"><div class="b old" style="width:86.2%"></div></div><span class="v">14.7%</span>
-      <span>Text-direction fix</span><div class="t"><div class="b old" style="width:55.7%"></div></div><span class="v">9.5%</span>
-      <span>Frozen: line finder, cleaning, region fixes</span><div class="t"><div class="b good" style="width:25.6%"></div></div><span class="v">4.35%</span>
-      <span>Frozen, with OCRL's own line reader</span><div class="t"><div class="b good" style="width:23.4%"></div></div><span class="v">3.97%</span>
-    </div>
-    <figcaption>Characters differing from Azure's reading, 50 unseen documents, 10,911 lines. Shorter is closer to Azure, which is not the same as more correct: OCRL's reader learned from Azure and so agrees with it more. In the frozen pipeline the median document differs by 2.7%, and on 2.6% of Azure's lines we read nothing.</figcaption>
-  </figure>
-  <p>On the 100 further documents: 4.00% of characters differ, median document 2.3%, nothing read on 5.6% of lines.</p>
-</section>
-
-<section>
-  <h2>Structure: what each line is, and how lines form blocks</h2>
-  <p>Scored with inkscript_v2's own <code>compare()</code> against the three development documents that have keys, and against the Gemini-made reference for the 27-page article. Those three keys were written by Claude from the page images in the inkscript_v2 project, not by a person, so every figure here is agreement with a strong model's reading of the page. Fully local: the lines, the text and the types all come from OCRL.</p>
+  <h2>The other two page sets</h2>
+  <div class="scroll">
   <table>
-    <tr><th>Document</th><th class="n">Line types</th><th class="n">Blocks exactly right</th><th class="n">Reading order</th></tr>
-    <tr><td>0073, journal pages with tables</td><td class="n">97.0%</td><td class="n">85.7%</td><td class="n">100%</td></tr>
-    <tr><td>0175, thesis abstract in three columns</td><td class="n">83.3%</td><td class="n">67.9%</td><td class="n">98.2%</td></tr>
-    <tr><td>0499, magazine page with photographs</td><td class="n">36.8%</td><td class="n">12.5%</td><td class="n">72.6%</td></tr>
-    <tr><td>0013, 27-page article (Gemini-made reference)</td><td class="n">93.3%</td><td class="n">79.7%</td><td class="n">98.1%</td></tr>
+    <tr><th>Page set</th><th>Version</th><th class="n">Line types right</th><th class="n">Blocks exactly right</th><th class="n">Lines lost</th><th class="n">Text differing from Azure</th></tr>
+    <tr><td rowspan="3">70 development pages, from journals the models were trained on</td><td>This morning</td><td class="n">84.8%</td><td class="n">78.1%</td><td class="n">1.2%</td><td class="n">1.79%</td></tr>
+    <tr><td>Laptop now</td><td class="n now">95.7%</td><td class="n now">84.3%</td><td class="n">0.6%</td><td class="n">1.42%</td></tr>
+    <tr><td>GPU now</td><td class="n now">95.8%</td><td class="n now">87.8%</td><td class="n">0.6%</td><td class="n">1.42%</td></tr>
+    <tr><td rowspan="4">150 development pages, from 110 journals never seen in training</td><td>Laptop, midday</td><td class="n">88.3%</td><td class="n">76.5%</td><td class="n">2.6%</td><td class="n">3.13%</td></tr>
+    <tr><td>Laptop now</td><td class="n now">89.9%</td><td class="n now">76.1%</td><td class="n">1.8%</td><td class="n">2.63%</td></tr>
+    <tr><td>GPU, midday</td><td class="n">92.8%</td><td class="n">83.5%</td><td class="n">2.6%</td><td class="n">3.13%</td></tr>
+    <tr><td>GPU now</td><td class="n now">94.3%</td><td class="n now">83.7%</td><td class="n">1.8%</td><td class="n">2.63%</td></tr>
   </table>
-  <p>The same three documents at the start of the night: 23.9%, 42.5% and 3.5% of line types.</p>
-  <p class="note">These four documents were developed on. They show progress, not expected accuracy. The owner's 12 locked test pages have not been run, by the owner's choice, and stay unseen.</p>
+  </div>
+  <p>On the 70 known-journal pages, the laptop and GPU versions label lines about equally well. On unseen journals the GPU version is clearly ahead. The small models have learned the journals they were trained on, and Qwen generalises better. The 150 unseen development pages were set up during the day so that fixes could be found without touching the exam; the last round of fixes was found there.</p>
 </section>
 
 <section>
-  <h2>What was wrong, and is fixed</h2>
+  <h2>The structure step alone</h2>
+  <p>Here each structure step is given Azure's lines and text, so only its own work is scored, on the exam.</p>
+  <div class="scroll">
+  <table>
+    <tr><th>Structure step, given Azure's lines</th><th class="n">Line types right</th><th class="n">Blocks exactly right</th></tr>
+    <tr><td>Qwen3.5-9B, fine-tuned on 3,704 model-labelled pages</td><td class="n now">97.3%</td><td class="n now">87.6%</td></tr>
+    <tr><td>The two small structure models plus rules</td><td class="n">87.8%</td><td class="n">81.7%</td></tr>
+    <tr><td>Qwen3.5-9B with no fine-tuning</td><td class="n">83.3%</td><td class="n">52.6%</td></tr>
+  </table>
+  </div>
+  <figure>
+    <svg id="curve" viewBox="0 0 640 230" role="img" aria-label="Qwen's share of line types right on the 70 development pages, given Azure's lines: untuned 86.3%, after 400 training pages 91.4%, after 1,190 pages 93.8%, after 3,704 pages 96.2%. The two small structure models score 95.0% on the same test."></svg>
+    <figcaption>How Qwen improved with more training pages, on the 70 development pages, given Azure's lines. The points are spaced evenly, not to scale. The dashed line is the two small structure models on the same test (95.0%). On these known journals Qwen passes the small models only with the most training. On the exam's unseen journals it is ahead by 9.5 points (97.3% against 87.8%).</figcaption>
+  </figure>
+  <p>Untuned, Qwen tends to merge many lines into one block (39.8% of blocks merged on the exam). That is why its blocks exactly right is only 52.6%.</p>
+</section>
+
+<section>
+  <h2>Born-digital and scanned pages, on the exam</h2>
+  <p>A page counts as born-digital when the PDF page has fonts and no picture covering most of it. Of the 200 exam pages, 63 are born-digital and 137 are scans.</p>
+  <div class="scroll">
+  <table>
+    <tr><th>Pages</th><th class="n">Pages</th><th class="n">Line types, laptop</th><th class="n">Line types, GPU</th><th class="n">Lines lost</th><th class="n">Text differing from Azure</th></tr>
+    <tr><td>Born-digital, prose</td><td class="n">37</td><td class="n">91.6%</td><td class="n">94.6%</td><td class="n">0.5%</td><td class="n">0.69%</td></tr>
+    <tr><td>Born-digital, with tables</td><td class="n">15</td><td class="n">93.1%</td><td class="n">94.1%</td><td class="n">3.3%</td><td class="n">3.65%</td></tr>
+    <tr><td>Born-digital, all</td><td class="n">63</td><td class="n">91.8%</td><td class="n">95.1%</td><td class="n">1.9%</td><td class="n">1.98%</td></tr>
+    <tr><td>Scanned, prose</td><td class="n">88</td><td class="n">88.1%</td><td class="n">93.5%</td><td class="n">1.2%</td><td class="n">2.56%</td></tr>
+    <tr><td>Scanned, with tables</td><td class="n">23</td><td class="n">84.1%</td><td class="n">88.4%</td><td class="n">5.0%</td><td class="n">4.65%</td></tr>
+    <tr><td>Scanned, all</td><td class="n">137</td><td class="n">84.2%</td><td class="n">91.1%</td><td class="n">2.7%</td><td class="n">2.70%</td></tr>
+  </table>
+  </div>
+  <p>At midday, born-digital pages with tables lost 8.5% of their lines and labelled 85.0% (laptop) and 81.8% (GPU) of lines correctly. They now lose 3.3% and label 93.1% and 94.1%.</p>
+</section>
+
+<section>
+  <h2>Reading: how often a character is wrong</h2>
+  <p>This is measured on 770 lines whose correct reading was settled independently of every reader below, as described in the morning section. Vowel marks are ignored for every reader alike.</p>
+  <div class="tiles">
+    <div class="tile best"><div class="who">The owner's reader, in use</div><div class="big">1.37%</div><div class="sub">the reader both versions use</div></div>
+    <div class="tile"><div class="who">Our reader, 2.96M lines</div><div class="big">1.72%</div><div class="sub">trained today on 2.5 times the data</div></div>
+    <div class="tile"><div class="who">Azure</div><div class="big">1.85%</div><div class="sub">for comparison</div></div>
+    <div class="tile"><div class="who">Our reader, 1.17M lines</div><div class="big">1.86%</div><div class="sub">trained last night</div></div>
+  </div>
+  <p>Numbers and Latin words inside Arabic lines now come out in the right order. A new rule reverses the standard layout of mixed right-to-left and left-to-right text. On a synthetic test made from 24,061 of Azure's mixed lines, it restores 99.0% of lines exactly, up from 91.8% with the earlier hand-written rules.</p>
+</section>
+
+<section>
+  <h2>What the parser does now that it did not this morning</h2>
   <ul>
-    <li><b>Pages were drawn by the wrong box.</b> Azure measures the visible page (the crop box); we drew the media box, misplacing every line on 45% of documents. All earlier line numbers were redone.</li>
-    <li><b>Photographs were read as ink.</b> They are now found by their grey tones and painted out before any blob is made.</li>
-    <li><b>Table frames were one blob</b> that swallowed every cell. Ruled lines are removed; a rule standing alone still cuts the page into regions.</li>
-    <li><b>The same ink was read twice</b> where a column and a wider footer were joined into one region that overlapped the next column.</li>
-    <li><b>Small marks joined the wrong line</b> when two lines shared a height (two columns, a table row). Marks far from any letter are dropped as margin specks.</li>
-    <li><b>Latin and mixed lines came out in the wrong order</b> from the mirrored line reader.</li>
-    <li><b>List items were called paragraphs.</b> A rule now reads lists off the page: an item opens with a mark and runs to the next mark, a gap, or a line that stops short.</li>
+    <li><b>Tables come out whole, as grids</b>: rows, columns and merged cells, and a table continued over a page break is joined to its start.</li>
+    <li><b>List marks are kept</b>. Numbers and bullets the line finder had set apart are put back on their lines.</li>
+    <li><b>Running heads, footnotes and endnotes</b> are recognised across the pages of a document, not page by page.</li>
+    <li><b>Sideways pages</b> are turned upright and read. Photo pages are no longer turned by mistake.</li>
+    <li><b>Shaded tables</b> are no longer erased as if they were photographs.</li>
+    <li><b>Warnings</b> appear on any page or line that was not read properly, in the output and in the viewer, instead of failing silently.</li>
+    <li><b>Equations and pictures</b> are shown as crops of the scan, one figure block per picture. Formulas are not transcribed.</li>
+    <li><b>Whole documents</b>: reading 25 complete documents end to end turned up a hang and several table bugs, which are fixed.</li>
+    <li><b>Latin-script pages</b> are read left to right.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>What was tried and did not help</h2>
+  <ul>
+    <li>The line reader trained on 2.5 times the data: 1.72% of characters wrong, better than 1.86% but still behind the owner's reader at 1.37%, so it is not used.</li>
+    <li>The line finder trained on about 15 times the data: no change on the exam (lines lost 3.38% against 3.41%).</li>
+    <li>The small structure models trained on more labelled pages, including pages from 3,000 new journals: +0.6 points of line types on the exam. Not deployed.</li>
+    <li>Fine-tuning Qwen on our own lines instead of Azure's: +0.3 points of line types on the exam, blocks unchanged: too small to count. The GPU version runs this adapter; the earlier one stays selectable.</li>
   </ul>
 </section>
 
 <section>
   <h2>What is still weak</h2>
   <ul>
-    <li><b>Tables</b> are found cell by cell but read column by column, not row by row.</li>
-    <li><b>English and mixed pages</b> are ordered right to left like Arabic ones.</li>
-    <li><b>Magazine layouts</b>: the structure model has never seen pull quotes or standfirsts.</li>
-    <li><b>Vowelled text, handwriting, forms</b> are out of scope so far.</li>
-    <li><b>Truth to develop against</b>: three keyed documents is too few, and no structure key was made or checked by a person. A first census of 74,947 pages from 1,520 journals (made from Azure's boxes alone) groups pages into 14 kinds; about a fifth of pages are kinds the parser is weak on. Seventy pages, five of each kind, are drafted. Given the same scan, lines and a two-page guide, Opus, Sonnet and Haiku reproduce the three existing keys at 100%, 99% and 99% of line types and 98%, 97% and 91% of blocks, so model labelling is consistent with the target; it has not been checked against a different model family or a person.</li>
+    <li><b>Pages with tables and charts</b> are the weakest kind on the exam: 84.5% of line types and 67.0% of blocks exactly right with the GPU version. Their text differs from Azure's by 7.7%, the most of any kind, and pages with tables lose the most lines (5.0% on scanned table pages, below).</li>
+    <li><b>Magazine layouts</b> (dense two-column and magazine pages): 85.6% of line types and 72.3% of blocks with the GPU version.</li>
+    <li><b>Title and cover pages</b>: 63.0% of line types with the laptop version, and 89.8% with the GPU version, on only 127 lines.</li>
+    <li><b>Text beside a table</b>: only 69.7% of blocks exactly right even with the GPU version.</li>
+    <li><b>Dithered photographs</b> are sometimes read as text.</li>
+    <li><b>Formulas</b> are shown as pictures, not transcribed.</li>
+    <li><b>Old, faded two-column scans</b> still lose and misplace lines, seen by eye when reading whole documents.</li>
   </ul>
 </section>
 
 <section>
-  <h2>Cost</h2>
-  <p>Rented GPU time for everything above: 6.23 dollars. One machine was deleted mid-run by a second safety guard on the same account, losing a trained line finder and the downloads; results are now copied back after every job.</p>
+  <h2>How to try it</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>Version</th><th>Start</th><th>Then open</th></tr>
+    <tr><td>Laptop, fully local</td><td><code>uv run python scripts/serve.py</code></td><td><code>http://localhost:8765</code></td></tr>
+    <tr><td>GPU, with Qwen</td><td><code>scripts/gpu/platform.sh start --rent</code><br><span style="color:var(--muted);font-size:13px">rents a GPU machine; about 10 minutes on a fresh one</span></td><td><code>http://localhost:8090</code></td></tr>
+  </table>
+  </div>
+  <p class="note">A safety guard destroys a rented machine that has been idle for 90 minutes. <code>scripts/gpu/platform.sh stop --down</code> ends it straight away.</p>
+</section>
+
+<section>
+  <h2>What the day cost</h2>
+  <div class="tiles">
+    <div class="tile"><div class="who">Rented GPUs</div><div class="big">$28.61</div><div class="sub">against a cap of $40</div></div>
+    <div class="tile"><div class="who">Anthropic API</div><div class="big">$9.64</div><div class="sub">model calls</div></div>
+    <div class="tile"><div class="who">Gemini API</div><div class="big">$5.67</div><div class="sub">model calls</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>Two decisions for the owner</h2>
+  <ol>
+    <li><b>Numbered notes at the end of an article, under a "sources" heading:</b> should they be references or endnotes?</li>
+    <li><b>The order of a citation's left-to-right pieces:</b> "(2005 ,Legendre)", as Azure gives it and as the parser does now, or "(Legendre, 2005)"?</li>
+  </ol>
+</section>
+
+<!-- ======================= MORNING PAGE, KEPT ======================= -->
+<div class="morning" style="display:flex;flex-direction:column">
+<h2>From this morning's page</h2>
+<p class="lede">These were written at the start of the day, after the first long working night. Each one is marked as still true, or as replaced by the work above.</p>
+
+<section>
+  <h3><span class="chip true">Still true</span>Reading: how often a character is wrong</h3>
+  <p>Measured on 770 lines from inkscript experiment 103. Two readers typed each line from its image without knowing which system had proposed which reading, and a third settled their differences. So the truth is not Azure's text. Vowel marks are ignored for every reader alike.</p>
+  <div class="tiles">
+    <div class="tile"><div class="who">Azure</div><div class="big">1.85%</div><div class="sub">426 of 770 lines exactly right</div></div>
+    <div class="tile best"><div class="who">The owner's 8.4M reader</div><div class="big">1.37%</div><div class="sub">502 of 770 lines exactly right</div></div>
+    <div class="tile"><div class="who">OCRL line reader, trained last night</div><div class="big">1.86%</div><div class="sub">436 of 770 lines exactly right</div></div>
+    <div class="tile"><div class="who">OCRL cluster reader (before)</div><div class="big">12.22%</div><div class="sub">121 of 770 lines exactly right</div></div>
+  </div>
+  <div class="scroll">
+  <table>
+    <tr><th>Lines</th><th class="n">Azure</th><th class="n">Owner's reader</th><th class="n">OCRL line reader</th></tr>
+    <tr><td>Printed before 2000</td><td class="n">3.43%</td><td class="n">2.32%</td><td class="n">3.01%</td></tr>
+    <tr><td>Printed from 2000 on</td><td class="n">1.01%</td><td class="n">0.60%</td><td class="n">0.93%</td></tr>
+    <tr><td>20,000 lines from 121 held-out journals, difference from Azure's text</td><td class="n">n/a</td><td class="n">0.41%</td><td class="n">0.31%</td></tr>
+  </table>
+  </div>
+  <p class="note">Both line readers are the same network (convolutions, a two-layer LSTM, CTC; 8 million weights). The owner's was trained on 2.74 million Azure-confident lines and OCRL's on 1.17 million, in about 50 minutes, stopping one pass short because of a bug in the schedule. The lines come from the owner's development documents, which their reader may have seen in training. The experiment's files do not say whether its three readers were people or vision models. Their notes read like a model's, so treat this truth as model-read until shown otherwise. The readers were shown Azure's reading as one candidate and never the owner's reader's, which if anything favours Azure. Today's reader trained on 2.96 million lines scores 1.72% here (above).</p>
+</section>
+
+<section>
+  <h3><span class="chip true">Still true</span>Finding lines, on 50 documents the line finder never saw</h3>
+  <figure>
+    <div class="bars">
+      <span>Trained line finder, when first plugged in</span><div class="t"><div class="b old" style="width:84.8%"></div></div><span class="v">84.8%</span>
+      <span>Rule-based lines, with last night's fixes</span><div class="t"><div class="b old" style="width:85.6%"></div></div><span class="v">85.6%</span>
+      <span>Trained line finder, frozen pipeline</span><div class="t"><div class="b good" style="width:95.2%"></div></div><span class="v">95.2%</span>
+    </div>
+    <figcaption>Share of Azure's lines matched by exactly one line of ours, 18,799 lines. In the frozen pipeline those lines hold 97.1% of the characters, and 94.1% of steps from one matched line to the next go forward in our reading order as they do in Azure's. The line finder alone, scored on its own held-out pages, finds 98.2% of lines.</figcaption>
+  </figure>
+  <p>On 100 further documents, from journals neither the line finder nor OCRL's reader was fitted on: 92.3% of lines one-to-one, holding 96.5% of the characters; reading order 96.1%. A line finder trained today on about 15 times the data made no difference on the exam.</p>
+</section>
+
+<section>
+  <h3><span class="chip sup">Replaced</span>The whole pipeline, compared with Azure's text</h3>
+  <p>This morning: 3.97% of characters differed from Azure's reading on 50 unseen documents (4.35% with the owner's reader), and 4.00% on 100 further documents. Those were different documents. Today's measure is the exam's: 2.42% at the end of the day, 2.80% with this morning's code. Both are agreement with Azure, not accuracy.</p>
+</section>
+
+<section>
+  <h3><span class="chip sup">Replaced</span>Structure, on three keyed documents</h3>
+  <p>This morning, structure was scored on three development documents, keyed by Claude in an earlier project, plus a Gemini-made reference for one 27-page article. On these, 36.8% to 97.0% of line types were right. That test was too small and had been developed on. It has been replaced by the three page sets above, each labelled independently by several models: 70 development pages, 150 unseen development pages, and the 200-page exam. The owner's 12 locked test pages have still not been run, by the owner's choice.</p>
+</section>
+
+<section>
+  <h3><span class="chip true">Still true</span>What was wrong last night, and is fixed</h3>
+  <ul>
+    <li><b>Pages were drawn by the wrong box.</b> Azure measures the visible page (the crop box), but we drew the media box, which misplaced every line on 45% of documents. All earlier line numbers were redone.</li>
+    <li><b>Photographs were read as ink.</b> They are now found by their grey tones and painted out before any blob is made. Today, shaded tables stopped being taken for photographs.</li>
+    <li><b>Table frames were one blob</b> that swallowed every cell. Ruled lines are removed, and a rule standing alone still cuts the page into regions.</li>
+    <li><b>The same ink was read twice</b> where a column and a wider footer were joined into one region that overlapped the next column.</li>
+    <li><b>Small marks joined the wrong line</b> when two lines shared a height (two columns, a table row). Marks far from any letter are dropped as margin specks.</li>
+    <li><b>Latin and mixed lines came out in the wrong order</b> from the mirrored line reader. Today's rule for mixed lines replaces the earlier fix.</li>
+    <li><b>List items were called paragraphs.</b> A rule now reads lists off the page: an item opens with a mark and runs to the next mark, a gap, or a line that stops short.</li>
+  </ul>
+</section>
+
+<section>
+  <h3>What was weak this morning</h3>
+  <ul>
+    <li><span class="chip sup">Replaced</span><b>Tables</b> were read column by column. They now come out as grids, and reading order inside tables on the exam went from 65.5% to 90.3%.</li>
+    <li><span class="chip sup">Replaced</span><b>English and mixed pages</b> were ordered right to left. Latin-script pages are now read left to right.</li>
+    <li><span class="chip true">Still true</span><b>Magazine layouts</b> are still among the weakest kinds (above).</li>
+    <li><span class="chip true">Still true</span><b>Vowelled text, handwriting and forms</b> are still out of scope.</li>
+    <li><span class="chip sup">Replaced</span><b>Truth to develop against</b>: three keyed documents were too few. Now 420 pages across three sets are labelled by independent models. No structure label has been made or checked by a person.</li>
+  </ul>
+</section>
+
+<section>
+  <h3><span class="chip sup">Replaced</span>Cost</h3>
+  <p>This morning's figure was 6.23 dollars of rented GPU time for the night. The day's total is above. One machine was deleted mid-run by a second safety guard on the same account, losing a trained line finder and the downloads. Results are now copied back after every job.</p>
+</section>
+</div>
+
+<section>
+  <h2>Where the numbers come from</h2>
+  <p>Every whole-pipeline figure above is printed by <code>uv run python scripts/e2e_judged.py --show RUN</code> or <code>--compare A B</code> (add <code>--set check</code> or <code>--set unseen</code>), on the saved runs below. These commands only read the saved results.</p>
+  <div class="scroll">
+  <table>
+    <tr><th>Figure</th><th>Saved run</th></tr>
+    <tr><td>Exam, this morning</td><td><code>check_morning_6be31f2</code></td></tr>
+    <tr><td>Exam, laptop version now</td><td><code>end_pair_check</code></td></tr>
+    <tr><td>Exam, GPU version now</td><td><code>end_qwen_check</code> (reuses the lines read in <code>end_pair_check</code>)</td></tr>
+    <tr><td>Exam, midday (born-digital comparison)</td><td><code>check_now_968bc8d</code>, <code>check_qwen_e2e</code></td></tr>
+    <tr><td>70 development pages: morning, laptop now, GPU now</td><td><code>dev_morning_6be31f2</code>, <code>dev_pair_fix</code>, <code>end_qwen_dev</code></td></tr>
+    <tr><td>150 unseen development pages: laptop midday and now</td><td><code>un_pair_dc87</code>, <code>un_pair_fix</code></td></tr>
+    <tr><td>150 unseen development pages: GPU midday and now</td><td><code>un_qwen_dc87</code>, <code>un_qwen_fix</code></td></tr>
+    <tr><td>Structure step alone on the exam: fine-tuned Qwen, small models, untuned Qwen</td><td><code>selftest_check_qwenft3</code>, <code>az_check_pair</code>, <code>selftest_check_qwen</code></td></tr>
+    <tr><td>Qwen learning curve on the 70 pages: untuned, 400, 1,190, 3,704 pages; small models</td><td><code>selftest_dev_qwen</code>, <code>selftest_dev_qwenft400</code>, <code>selftest_dev_qwenft</code>, <code>selftest_dev_qwenft2</code>; <code>az_dev_pair</code></td></tr>
+    <tr><td>Did not help: Qwen on our own lines; bigger line finder; small models on more pages</td><td><code>check_qwen_e2e</code> to <code>check_qwen_ours</code>; <code>check_now_968bc8d</code> to <code>check_lf2</code>; <code>check_pair_now</code> to <code>check_v6</code></td></tr>
+    <tr><td>Born-digital and scanned split</td><td>a script in the session's scratch folder (<code>digital3.py</code>) over <code>end_pair_check</code> and <code>end_qwen_check</code>, reading <code>pdffonts</code> and <code>pdfimages</code> for each page</td></tr>
+    <tr><td>Reading on 770 settled lines</td><td><code>out/line_reader_v2_blind.txt</code> (Azure over all 770 lines combines its 710 disputed lines and the 60 agreed ones)</td></tr>
+    <tr><td>Mixed-line order, 24,061 lines</td><td>commit <code>6a31f5d</code> and the note in <code>src/ocrl/recog/linereader.py</code></td></tr>
+    <tr><td>Costs</td><td>the providers' accounts at the end of the day; not in a saved file</td></tr>
+  </table>
+  </div>
+  <p>See also <a href="pipeline.html" style="color:var(--azure)">how the models fit together</a>.</p>
 </section>
 </main>
+<div id="tip" role="tooltip"></div>
+
+<script>
+(function () {
+  // Exam, by kind of page: [kind, reference lines, types morning, laptop, gpu, blocks morning, laptop, gpu]
+  var K = [
+    ["Plain single column",390,89.0,85.1,90.8,80.4,84.7,92.0],
+    ["Latin-script pages",535,92.0,88.2,91.0,80.7,84.2,90.1],
+    ["Large or heavy type",568,85.4,88.4,96.1,76.3,76.3,86.1],
+    ["Two columns",851,76.9,79.9,98.4,55.6,55.6,84.9],
+    ["Small text block",240,75.0,78.8,87.1,64.7,71.8,84.7],
+    ["Two dense columns and magazine pages",694,81.7,86.0,85.6,60.7,65.4,72.3],
+    ["Dense single column",439,85.2,91.1,93.8,78.1,86.5,92.7],
+    ["Long justified paragraphs",330,93.0,99.7,97.6,88.8,93.8,96.2],
+    ["Article first page",454,76.4,89.9,95.8,68.8,74.5,79.0],
+    ["Lists and references",455,71.6,90.3,96.0,84.9,88.2,92.7],
+    ["Tables of numbers",1025,75.6,95.1,96.1,53.8,65.6,72.0],
+    ["Text with a table",623,68.1,87.8,93.9,54.9,60.6,69.7],
+    ["Title and cover pages",127,33.9,63.0,89.8,51.8,63.5,81.2],
+    ["Mixed: tables, charts, shaded cells",962,51.9,82.3,84.5,59.4,61.3,67.0]
+  ];
+  var NS = "http://www.w3.org/2000/svg";
+  var box = document.getElementById("bykind"), tip = document.getElementById("tip");
+  var measure = "types";
+  function el(n, a, p) { var e = document.createElementNS(NS, n); for (var k in a) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; }
+  function fmt(v) { return v.toFixed(1) + "%"; }
+  function showTip(ev, html) { tip.innerHTML = html; tip.style.display = "block"; var x = ev.clientX + 14, y = ev.clientY + 14; if (x + 270 > innerWidth) x = ev.clientX - 274; tip.style.left = x + "px"; tip.style.top = y + "px"; }
+  function hideTip() { tip.style.display = "none"; }
+  function draw() {
+    var o = measure === "types" ? 2 : 5;
+    var rows = K.slice().sort(function (a, b) { return a[o + 2] - b[o + 2]; });
+    var W = Math.max(300, box.getBoundingClientRect().width), narrow = W < 620;
+    var labW = narrow ? 6 : 280, valW = 52, pad = 10;
+    var x0 = labW + pad, x1 = W - valW - 6, lo = 30, hi = 100;
+    var rowH = narrow ? 48 : 34, top = 22;
+    var H = top + rows.length * rowH + 8;
+    box.innerHTML = "";
+    var svg = el("svg", { viewBox: "0 0 " + W + " " + H, style: "width:100%;height:auto;display:block", role: "img",
+      "aria-label": (measure === "types" ? "Line types right" : "Blocks exactly right") + " by kind of page on the exam, this morning, laptop version now and GPU version now." }, box);
+    function X(v) { return x0 + (v - lo) / (hi - lo) * (x1 - x0); }
+    for (var t = lo; t <= hi; t += 10) {
+      el("line", { x1: X(t), x2: X(t), y1: top - 4, y2: H - 6, "class": "c-grid" }, svg);
+      var tx = el("text", { x: X(t), y: 12, "text-anchor": "middle", "class": "c-dim" }, svg); tx.textContent = t + "%";
+    }
+    rows.forEach(function (r, i) {
+      var yb = top + i * rowH, cy = narrow ? yb + 33 : yb + rowH / 2;
+      if (narrow) {
+        var l = el("text", { x: 2, y: yb + 15, "class": "c-lbl" }, svg); l.textContent = r[0];
+        var d = el("tspan", { "class": "c-dim", dx: 6 }, l); d.textContent = r[1].toLocaleString("en") + " lines";
+      } else {
+        var l2 = el("text", { x: labW, y: cy - 2, "text-anchor": "end", "class": "c-lbl" }, svg); l2.textContent = r[0];
+        var d2 = el("text", { x: labW, y: cy + 12, "text-anchor": "end", "class": "c-dim" }, svg); d2.textContent = r[1].toLocaleString("en") + " lines";
+      }
+      var vs = [r[o], r[o + 1], r[o + 2]];
+      el("line", { x1: X(Math.min.apply(null, vs)), x2: X(Math.max.apply(null, vs)), y1: cy, y2: cy, "class": "c-track" }, svg);
+      el("circle", { cx: X(vs[0]), cy: cy, r: 5.5, "class": "m-morning" }, svg);
+      el("rect", { x: X(vs[1]) - 5.5, y: cy - 5.5, width: 11, height: 11, rx: 1.5, "class": "m-laptop" }, svg);
+      el("path", { d: "M" + X(vs[2]) + " " + (cy - 7.5) + " l7.5 7.5 l-7.5 7.5 l-7.5 -7.5 z", "class": "m-gpu" }, svg);
+      var v = el("text", { x: W - 4, y: cy + 4, "text-anchor": "end", "class": "c-val" }, svg); v.textContent = fmt(vs[2]);
+      var hit = el("rect", { x: 0, y: yb, width: W, height: rowH, fill: "transparent" }, svg);
+      var html = "<b>" + r[0] + "</b> (" + r[1] + " lines)<br>This morning " + fmt(vs[0]) + "<br>Laptop now " + fmt(vs[1]) + "<br>GPU now " + fmt(vs[2]);
+      hit.addEventListener("mousemove", function (ev) { showTip(ev, html); });
+      hit.addEventListener("mouseleave", hideTip);
+    });
+  }
+  function table() {
+    var h = '<tr><th>Kind of page</th><th class="n">Lines</th><th class="n">Types, morning</th><th class="n">Types, laptop</th><th class="n">Types, GPU</th><th class="n">Blocks, morning</th><th class="n">Blocks, laptop</th><th class="n">Blocks, GPU</th></tr>';
+    K.forEach(function (r) { h += "<tr><td>" + r[0] + '</td><td class="n">' + r[1] + "</td>" + r.slice(2).map(function (v) { return '<td class="n">' + fmt(v) + "</td>"; }).join("") + "</tr>"; });
+    document.getElementById("bykind-table").innerHTML = h;
+  }
+  var btns = document.querySelectorAll(".toggle button");
+  for (var i = 0; i < btns.length; i++) btns[i].addEventListener("click", function () {
+    measure = this.getAttribute("data-m");
+    for (var j = 0; j < btns.length; j++) btns[j].setAttribute("aria-pressed", btns[j] === this ? "true" : "false");
+    draw();
+  });
+  table(); draw();
+  var rt; window.addEventListener("resize", function () { clearTimeout(rt); rt = setTimeout(draw, 80); });
+
+  // Qwen learning curve
+  var c = document.getElementById("curve");
+  var P = [["untuned", 86.3], ["400 pages", 91.4], ["1,190 pages", 93.8], ["3,704 pages", 96.2]];
+  var cx0 = 70, cx1 = 590, ylo = 84, yhi = 98, cy0 = 190, cy1 = 20;
+  function CX(i) { return cx0 + i * (cx1 - cx0) / (P.length - 1); }
+  function CY(v) { return cy0 - (v - ylo) / (yhi - ylo) * (cy0 - cy1); }
+  for (var g = 86; g <= 98; g += 4) {
+    el("line", { x1: 50, x2: 620, y1: CY(g), y2: CY(g), "class": "c-grid" }, c);
+    var gt = el("text", { x: 44, y: CY(g) + 4, "text-anchor": "end", "class": "c-dim" }, c); gt.textContent = g + "%";
+  }
+  el("line", { x1: 50, x2: 620, y1: CY(95.0), y2: CY(95.0), "class": "l-ref" }, c);
+  var rl = el("text", { x: 56, y: CY(95.0) - 6, "class": "c-dim" }, c); rl.textContent = "two small structure models, 95.0%";
+  el("polyline", { points: P.map(function (p, i) { return CX(i) + "," + CY(p[1]); }).join(" "), "class": "l-gpu" }, c);
+  P.forEach(function (p, i) {
+    el("path", { d: "M" + CX(i) + " " + (CY(p[1]) - 7) + " l7 7 l-7 7 l-7 -7 z", "class": "m-gpu" }, c);
+    var vt = el("text", { x: CX(i), y: CY(p[1]) + (i === 3 ? -12 : 22), "text-anchor": i === 3 ? "end" : "middle", "class": "c-val" }, c); vt.textContent = p[1].toFixed(1) + "%";
+    var xt = el("text", { x: CX(i), y: 216, "text-anchor": i === 0 ? "start" : i === 3 ? "end" : "middle", "class": "c-dim" }, c); xt.textContent = p[0];
+  });
+})();
+</script>
 </body>
 </html>
