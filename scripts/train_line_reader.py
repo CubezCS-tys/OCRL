@@ -33,7 +33,7 @@ def load(split):
     items = []
     files = sorted(glob.glob(f"data/reader/lines_{split}/*.pt"))
     for f in files[: a.shards] if a.shards and split == "train" else files:
-        d = torch.load(f, map_location="cpu")
+        d = torch.load(f, map_location="cpu", mmap=True)  # file-backed: the images can be dropped from memory and read back
         strip, off = d["strip"].numpy(), d["offsets"].tolist()
         items += [(strip[:, s:e], lab) for s, e, lab in zip(off, off[1:], d["labels"])]
     return items

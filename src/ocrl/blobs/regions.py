@@ -119,10 +119,11 @@ def partition(seeds: np.ndarray, tall: float, gutter: float = 1.3, min_side: int
 
 
 def find_regions(gray: np.ndarray, gutter: float = 1.3, min_side: int = 12, pad: int = 6,
-                 rules: list[tuple[int, int, int, int]] | None = None) -> list[Region]:
+                 rules: list[tuple[int, int, int, int]] | None = None, ltr: bool = False) -> list[Region]:
     """`gutter`: narrowest column gap, in letter heights. `min_side`: letters needed on each side of a cut.
     `rules`: ruled lines across the page (x0, y0, x1, y1), as the cleaner reports them. The printer drew
-    them to separate things, so a rule that spans a region cuts it there, before any gutter is looked for."""
+    them to separate things, so a rule that spans a region cuts it there, before any gutter is looked for.
+    `ltr`: the page is set left to right (is_ltr), and its columns are read from the left."""
     ink = binarize(gray)
     n, _, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
     if n <= 1:
@@ -138,10 +139,10 @@ def find_regions(gray: np.ndarray, gutter: float = 1.3, min_side: int = 12, pad:
 
     H, W = gray.shape
     out = []
-    for b in partition(seeds, tall, gutter, min_side, rules):
+    for b in partition(seeds, tall, gutter, min_side, rules, ltr=ltr):
         box = (max(int(b[:, 0].min()) - pad, 0), max(int(b[:, 1].min()) - pad, 0), min(int(b[:, 2].max()) + pad, W), min(int(b[:, 3].max()) + pad, H))
         out.append(Region(*box, parts=[box]))
-    return _merge_stacked(out)
+    return _merge_stacked(out, ltr)
 
 
 def _stacked(p: Region, r: Region) -> bool:
@@ -150,13 +151,15 @@ def _stacked(p: Region, r: Region) -> bool:
     return r.y0 >= p.y1 - 2 and min(p.x1, r.x1) - max(p.x0, r.x0) > 0.8 * min(wp, wr) and abs(wp - wr) < 0.25 * max(wp, wr)
 
 
-def _merge_stacked(regions: list[Region]) -> list[Region]:
+def _merge_stacked(regions: list[Region], ltr: bool = False) -> list[Region]:
     """Undo cuts the search made across a column rather than between columns.
 
     Two pieces of one column, one under the other, become one region. And where the page
     was cut into bands that each hold the same two columns (right, left, right, left),
-    the columns are restored so that the whole right column is read before the left.
+    the columns are restored so that the whole right column is read before the left (the left one
+    first on a left-to-right page).
     """
+    beside = (lambda a, b: b.x0 >= a.x1) if ltr else (lambda a, b: b.x1 <= a.x0)  # b is the next column over
     join = lambda p, r: Region(min(p.x0, r.x0), p.y0, max(p.x1, r.x1), r.y1, (p.parts or []) + (r.parts or []))
     out = list(regions)
     changed = True
@@ -167,7 +170,7 @@ def _merge_stacked(regions: list[Region]) -> list[Region]:
                 out[i : i + 2] = [join(out[i], out[i + 1])]
                 changed = True
                 break
-            if i + 3 < len(out) and out[i + 1].x1 <= out[i].x0 and _stacked(out[i], out[i + 2]) and _stacked(out[i + 1], out[i + 3]):
+            if i + 3 < len(out) and beside(out[i], out[i + 1]) and _stacked(out[i], out[i + 2]) and _stacked(out[i + 1], out[i + 3]):
                 out[i : i + 4] = [join(out[i], out[i + 2]), join(out[i + 1], out[i + 3])]
                 changed = True
                 break
@@ -242,6 +245,48 @@ def line_regions(lines: np.ndarray, shape: tuple[int, int], rules: list[tuple[in
     return out
 
 
+def split_at_uprights(lines: np.ndarray, uprights: list[tuple[int, int, int, int]] | None,
+                      gray: np.ndarray | None = None) -> np.ndarray:
+    """Cut line boxes where an upright rule of a table runs through them.
+
+    The line finder sometimes marks two neighbouring cells of a row, or a row number and its text, as one
+    line. Where the cleaner found an upright rule (and painted it out) crossing a line's middle, the ink on
+    its two sides belongs to two cells: the box is cut there, and each piece is a line of its own. With the
+    (cleaned) page `gray`, each piece's height is fitted to the ink inside it: a row the finder saw as tall
+    (a cell of two lines beside it) must not make a one-line cell's letters look small, and a piece with no
+    ink is dropped."""
+    if lines is None or len(lines) == 0 or not uprights:
+        return lines
+    ups = np.asarray(uprights, np.float32).reshape(-1, 4)
+    out = []
+
+    def piece(a: float, b: float, y0: float, y1: float) -> None:
+        if gray is not None:
+            ia, ib, iy0, iy1 = int(a), int(np.ceil(b)), max(int(y0), 0), int(np.ceil(y1))
+            rows = np.flatnonzero((gray[iy0:iy1, ia:ib] < 128).any(axis=1))
+            if not len(rows):
+                return
+            pad = 0.1 * (y1 - y0)
+            y0, y1 = max(y0, iy0 + rows[0] - pad), min(y1, iy0 + rows[-1] + 1 + pad)
+        out.append((a, y0, b, y1))
+
+    for x0, y0, x1, y1 in lines:
+        h = y1 - y0
+        ov = np.minimum(ups[:, 3], y1) - np.maximum(ups[:, 1], y0)
+        cut = ups[(ov >= 0.5 * h) & (ups[:, 0] > x0 + 0.2 * h) & (ups[:, 2] < x1 - 0.2 * h)]
+        if not len(cut):
+            out.append((x0, y0, x1, y1))
+            continue
+        a = x0
+        for ux0, _, ux1, _ in sorted(cut.tolist()):
+            if ux0 - a > 2:
+                piece(a, ux0, y0, y1)
+            a = max(a, ux1)
+        if x1 - a > 2:
+            piece(a, x1, y0, y1)
+    return np.array(out, np.float32).reshape(-1, 4)
+
+
 def plan(gray: np.ndarray, rules: list[tuple[int, int, int, int]] | None = None, lines: np.ndarray | None = None, pad: int = 16,
          from_lines: bool = False):
     """Everything the page is cut into, in reading order: [(region, its image, hints or None, rank or None)].
@@ -255,14 +300,24 @@ def plan(gray: np.ndarray, rules: list[tuple[int, int, int, int]] | None = None,
     rough reading-order measure from 94% to 96%, but it lowered the scores on the hand-keyed development
     documents (a table read as columns, a magazine page), so it is off until that is sorted out."""
     local = lambda r, bx: bx - np.array([r.x0 - pad, r.y0 - pad, r.x0 - pad, r.y0 - pad], np.float32)
+    ltr = is_ltr(gray)
     if lines is None or len(lines) == 0:
-        return [(r, r.crop(gray, pad), None, None) for r in find_regions(gray, rules=rules)]
+        return [(r, r.crop(gray, pad), None, None) for r in find_regions(gray, rules=rules, ltr=ltr)]
     if not from_lines:
+        # Columns are read in the script's direction, and within a region, lines level with each other (the
+        # cells of a table row, an author beside a date) are read in it too, then the next row down.
         cx, cy = (lines[:, 0] + lines[:, 2]) / 2, (lines[:, 1] + lines[:, 3]) / 2
-        return [(r, r.crop(gray, pad), local(r, lines[(cx >= r.x0) & (cx <= r.x1) & (cy >= r.y0) & (cy <= r.y1)]), None)
-                for r in find_regions(gray, rules=rules)]
+        out = []
+        for r in find_regions(gray, rules=rules, ltr=ltr):
+            mine = lines[(cx >= r.x0) & (cx <= r.x1) & (cy >= r.y0) & (cy <= r.y1)]
+            rank = None
+            if len(mine):
+                rank = np.empty(len(mine), np.int64)
+                rank[_rows(mine, float(np.median(mine[:, 3] - mine[:, 1])), ltr)] = np.arange(len(mine))
+            out.append((r, r.crop(gray, pad), local(r, mine), rank))
+        return out
     work, out = gray.copy(), []
-    for r, idx, rank in line_regions(lines, gray.shape, rules, is_ltr(gray)):
+    for r, idx, rank in line_regions(lines, gray.shape, rules, ltr):
         out.append((r, r.crop(work, pad), local(r, lines[idx]), rank))
         work[r.y0 : r.y1, r.x0 : r.x1] = 255
     return out

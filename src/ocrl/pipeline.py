@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from .blobs.layout import Layout, analyze
-from .blobs.regions import Region, find_regions, plan
+from .blobs.regions import Region, find_regions, is_ltr, plan, split_at_uprights
 from .recog.crops import cluster_ids, crop
 from .recog.decode import greedy, nbest
 from .recog.model import load
@@ -23,6 +23,9 @@ from .rules.signature import satellite_range
 from .text import DIGITS, LATIN
 
 _NUMBER = re.compile(f"[{DIGITS}]+(?:[.,][{DIGITS}]+)*")
+# A line that holds nothing but the mark opening a list item: a bullet or dash, a number or letter with its
+# mark ("١-", "3.", "أ-", "(٢)", "b)").
+_LONE_MARK = re.compile(rf"^\s*(?:[-–—−ـ•*·▪■●◦►✓]+|\(?\s?[{DIGITS}]{{1,3}}\s?[-–—ـ.)]|\(\s?(?:[{DIGITS}]{{1,3}}|[أ-ي])\s?\)|[أ-ي]\s?[-–ـ)]|[A-Za-z]\s?[.)])\s*$")
 
 
 @dataclass
@@ -64,6 +67,9 @@ class DocumentPage:
     """A whole page: its regions in reading order, each read on its own."""
 
     regions: list[tuple[Region, PageResult]]
+    # The page as cleaned before reading (ocrl.blobs.clean.Cleaned): its image, and the ruled lines and
+    # pictures that were painted out of it. Handed on so that nothing downstream cleans the page again.
+    cleaned: object = None
 
     @property
     def text(self) -> str:
@@ -184,10 +190,16 @@ class OCR:
         cleaned = clean_page(gray)
         gray = cleaned.gray
         lines = self.finder.lines(gray) if self.finder is not None else None
+        lines = split_at_uprights(lines, cleaned.uprights, gray)  # one line per table cell, not two cells as one
+        ltr = is_ltr(gray)
+        ups = np.asarray(cleaned.uprights, np.float32).reshape(-1, 4)
         out = []
         for r, crop, hints, rank in plan(gray, cleaned.rules, lines, pad=16):
-            out.append((r, self.read(crop, hints=hints, hint_rank=rank)))
-        return DocumentPage(out)
+            res = self.read(crop, hints=hints, hint_rank=rank)
+            if self.line_reader is not None:
+                _join_marks(res, ltr, ups - np.array([r.x0 - 16, r.y0 - 16] * 2, np.float32))
+            out.append((r, res))
+        return DocumentPage(out, cleaned)
 
     def _run(self, crops: list[np.ndarray]) -> list[np.ndarray]:
         out: list[np.ndarray | None] = [None] * len(crops)
@@ -222,6 +234,59 @@ class OCR:
             # digits needs a clearly wider gap. (A prior, not a rule of the script.)
             wide = 1.6 if a.text[-1] in DIGITS and b.text[0] in DIGITS else 1.0
             a.space_after = forced or gap > threshold * wide
+
+
+def _join_marks(res: PageResult, ltr: bool, uprights: np.ndarray) -> None:
+    """Give each list item back its mark. The line finder often marks an item's opening mark ("١-", "•",
+    "أ-") as a line of its own when it hangs out in the margin, a gap away from its text; the mark is then
+    read alone and the item's line starts without it, so nothing downstream can tell it is a list item.
+    A line read as nothing but such a mark, small, the outermost thing on its row, with a line of text
+    level with it a short gap further in (left of it on a right-to-left page) and no ruled upright
+    between them, is put back at the head of that line. `uprights` in this region's pixels."""
+    lay, lines = res.layout, res.lines
+    if len(lines) < 2:
+        return
+    box = {}
+    for li, ln in enumerate(lines):
+        if ln.clusters:
+            bx = lay.boxes[[b for c in ln.clusters for b in c.blobs]]
+            box[li] = (float(bx[:, 0].min()), float(bx[:, 1].min()), float(bx[:, 2].max()), float(bx[:, 3].max()))
+    level = lambda a, b: min(a[3], b[3]) - max(a[1], b[1]) >= 0.5 * min(a[3] - a[1], b[3] - b[1])
+    gone = {}
+    for a, A in box.items():
+        if not _LONE_MARK.match(lines[a].text) or a in gone.values():
+            continue
+        best, best_gap = None, np.inf
+        outer = False
+        for b, B in box.items():
+            if b == a or b in gone or not level(A, B):
+                continue
+            hb = B[3] - B[1]
+            gap = (B[0] - A[2]) if ltr else (A[0] - B[2])  # B further into the line than the mark
+            if gap < -0.2 * hb:
+                if ((A[0] - B[2]) if ltr else (B[0] - A[2])) > -0.2 * hb:
+                    outer = True  # something level on the mark's outer side: a table row, not an item
+                continue
+            if A[2] - A[0] <= 2.5 * hb and B[2] - B[0] >= 3 * hb and gap <= 3 * hb and gap < best_gap and not _LONE_MARK.match(lines[b].text):
+                lo, hi = (A[2], B[0]) if ltr else (B[2], A[0])
+                cross = len(uprights) and ((uprights[:, 0] < hi) & (uprights[:, 2] > lo) & (uprights[:, 1] < min(A[3], B[3])) & (uprights[:, 3] > max(A[1], B[1]))).any()
+                if not cross:
+                    best, best_gap = b, gap
+        if best is not None and not outer:
+            gone[a] = best
+    if not gone:
+        return
+    for a, b in gone.items():
+        lines[b].clusters = lines[a].clusters + lines[b].clusters
+        lines[b].text = lines[a].text.strip() + " " + lines[b].text.lstrip()
+        lay.line[lay.line == a] = b
+    keep = [li for li in range(len(lines)) if li not in gone]
+    remap = np.full(len(lines), -1, np.int32)
+    remap[keep] = np.arange(len(keep))
+    lay.line[:] = np.where(lay.line >= 0, remap[np.maximum(lay.line, 0)], -1)
+    lay.lines[:] = [lay.lines[li] for li in keep]
+    lines[:] = [lines[li] for li in keep]
+
 
 
 def _line_text(clusters: list[Cluster]) -> str:

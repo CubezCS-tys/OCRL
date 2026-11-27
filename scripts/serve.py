@@ -20,12 +20,12 @@ import torch
 from ocrl.doc.parse import parse, to_master
 from ocrl.doc.viewer import write_viewer
 from ocrl.pipeline import OCR
-from ocrl.structure.tag import Typer
+from ocrl.structure.tag import DEFAULT as TYPER, Typer
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--port", type=int, default=8765)
 ap.add_argument("--reader", default="/home/yassine/data/inkscript_labelled/experiments/89_final_reader/out/weights/v7/last.pt")
-ap.add_argument("--lines", default="out/linefinder.pt"); ap.add_argument("--typer", default="out/structure_v2.pt")
+ap.add_argument("--lines", default="out/linefinder.pt"); ap.add_argument("--typer", default=TYPER, help="a structure checkpoint, or two joined by '+' (the combined typer)")
 ap.add_argument("--max-pages", type=int, default=30); ap.add_argument("--threads", type=int, default=4)
 a = ap.parse_args()
 torch.set_num_threads(a.threads); cv2.setNumThreads(2)
@@ -97,7 +97,7 @@ def work(job_id: str) -> None:
 
         typer.open_item = False
         infos, blocks = parse(ocr, images, first, typer, progress=progress)
-        how = f"OCRL structure model ({Path(a.typer).stem}) with the list rule, local. Not checked by a person."
+        how = f"OCRL structure model ({' + '.join(Path(t).stem for t in a.typer.split('+'))}) with the list rule, local. Not checked by a person."
         master = to_master(pdf.stem, infos, blocks, 300, Path(a.reader).parent.name + " line reader", how)
         secs = time.time() - t
         job.update(state="writing", stage_began=time.time())

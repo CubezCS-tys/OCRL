@@ -90,11 +90,12 @@ if __name__ == "__main__":
         torch.save({"strip": torch.from_numpy(np.concatenate(C, axis=1)), "offsets": torch.from_numpy(offsets), "labels": L, "prov": P}, out / f"shard_{shard:03d}.pt")
         shard += 1; C, L, P = [], [], []
 
-    def guard():  # one odd document once made a worker grow to 100 GB: cap each worker (and its pdftoppm) at 16 GB
+    def guard():  # one odd document once made a worker grow to 100 GB: cap each worker's growth (and its pdftoppm) at 5 GB;
+        # the machine's real memory limit is its cgroup's (115 GB on the reader box), not what `free` shows
         import resource
         import cv2  # noqa: F401  (load the libraries first: the cap is on growth, not on what they reserve)
         vm = int(next(l for l in open("/proc/self/status") if l.startswith("VmSize")).split()[1]) << 10
-        resource.setrlimit(resource.RLIMIT_AS, (vm + (16 << 30), vm + (16 << 30)))
+        resource.setrlimit(resource.RLIMIT_AS, (vm + (5 << 30), vm + (5 << 30)))
 
     with Pool(a.workers, initializer=guard, maxtasksperchild=20) as pool:
         for k, (st, c, l, p) in enumerate(pool.imap_unordered(one, [(s, a.max_pages, a.min_conf) for s in ids], chunksize=1), 1):

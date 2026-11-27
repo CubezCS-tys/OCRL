@@ -88,6 +88,23 @@ def analyze(gray: np.ndarray, min_area: int = 3, aniso: float = 2.5, hints: np.n
         which = np.where(np.isfinite(off.min(axis=1)), off.argmin(axis=1), -1)
         hh = np.where(which >= 0, (hints[:, 3] - hints[:, 1])[np.maximum(which, 0)], np.inf)
         hinted = live & (which >= 0) & (h >= 0.3 * hh)
+        # A line made only of small marks (a table cell "٠.٠٠", whose Arabic zeros are dots; a row of dots)
+        # has nothing a third of its height, and was dropped whole. Where the finder marked a line and none
+        # of its letters qualifies, the marks inside the hint itself are its letters, if they add up to
+        # more than a speck or two.
+        used = np.zeros(len(hints), bool)
+        used[which[hinted]] = True
+        held = beside[np.arange(n), np.maximum(which, 0)] == 0
+        small_in = live & ~hinted & (which >= 0) & held & ~used[np.maximum(which, 0)] & (area >= 0.5 * stroke ** 2)
+        # Specks in a margin that the finder took for a line are one or two dots huddled together; a line
+        # of marks has several, spread over at least its own height.
+        total = np.bincount(which[small_in], weights=area[small_in], minlength=len(hints))
+        count = np.bincount(which[small_in], minlength=len(hints))
+        lo, hi = np.full(len(hints), np.inf), np.full(len(hints), -np.inf)
+        np.minimum.at(lo, which[small_in], boxes[small_in, 0])
+        np.maximum.at(hi, which[small_in], boxes[small_in, 2])
+        line_of_marks = (total >= 2.0 * stroke ** 2) & (count >= 2) & (hi - lo >= hints[:, 3] - hints[:, 1])
+        hinted |= small_in & line_of_marks[np.maximum(which, 0)]
         loose = live & ~hinted & (which < 0) & (h >= 0.45 * tall)
         seeds = np.flatnonzero(hinted | loose)
         _, seed_line = np.unique(which[seeds], return_inverse=True)  # hinted seeds: one line per hint in use

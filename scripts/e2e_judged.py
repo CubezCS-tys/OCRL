@@ -564,6 +564,22 @@ def selftest(who: str = BLOCK_REF) -> dict:
     return res
 
 
+def selftest_folder(folder: str) -> dict:
+    """Score any labeller's answers (FOLDER/PAGE.json, the labeller answer format) as if they were our output, on
+    Azure's lines like --selftest. A page with no answer counts as an empty page (every line lost)."""
+    folder = Path(folder)
+    res = {"name": f"selftest_{folder.name}", "config": {"typer": f"labels in {folder}", "reader": "azure"}, "pages": {}, "errors": []}
+    for pg, ref in load_reference().items():
+        f = folder / f"{pg}.json"
+        blocks = json.loads(f.read_text(encoding="utf-8"))["blocks"] if f.exists() else []
+        if not f.exists():
+            res["errors"].append(f"{pg}: no answer")
+        s = score_page(labelling_as_master({**ref, "blocks": {**ref["blocks"], "_labeller": blocks}}, "_labeller"), ref)
+        s["c"]["pages"] = 1
+        res["pages"][pg] = {"kind": ref["kind"], **s}
+    return res
+
+
 def load(name: str) -> dict:
     return json.loads((E2E / f"{name}.json").read_text(encoding="utf-8"))
 
@@ -593,7 +609,10 @@ def main() -> None:
     ap.add_argument("--show", metavar="NAME", help="print a saved run's summary")
     ap.add_argument("--rescore", metavar="NAME", help="score a saved run's masters again")
     ap.add_argument("--selftest", nargs="?", const=BLOCK_REF, metavar="JUDGE", help="score a judge's own labels as our output: checks the ruler")
+    ap.add_argument("--selftest-folder", metavar="DIR", help="score a labeller's answers (DIR/PAGE.json, e.g. out/labeller/dev_qwenft) as our output, on Azure's lines")
     a = ap.parse_args()
+    if a.selftest_folder:
+        r = selftest_folder(a.selftest_folder); save(r); print(summary(r)); return
     if a.selftest:
         r = selftest(a.selftest); save(r); print(summary(r)); return
     if a.compare:

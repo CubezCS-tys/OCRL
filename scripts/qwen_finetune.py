@@ -7,6 +7,8 @@ Documents (folder name before "_p") are split so that about 200 pages of whole d
 Nothing from dev_inputs is ever read. Run on the rented machine, in the venv that has vLLM, transformers 5, peft and fla:
 
     /work/qv/bin/python scripts/qwen_finetune.py --train-pages 1200 --out out/qwen_lora/run1
+    ... --init-adapter out/qwen_lora/run1/adapter --exclude out/qwen_lora/run1/split.json --train-pages 0 --out ...
+                      continue run1 on every labelled page it did not see (same validation pages)
 """
 import argparse, json, math, random, sys, time
 from pathlib import Path
@@ -60,9 +62,11 @@ def loss_of(model, enc, n_prompt, dev):
     enc = {k: v.to(dev) for k, v in enc.items()}
     base = model.base_model.model  # peft -> Qwen3_5ForConditionalGeneration
     hs = base.model(**enc).last_hidden_state  # logits only for the answer: the full vocabulary over 5k tokens would not fit
-    h = hs[:, n_prompt - 1:-1]; target = enc["input_ids"][:, n_prompt:]
-    logits = base.lm_head(h).float()
-    return torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), target.reshape(-1)), target.numel()
+    h = hs[0, n_prompt - 1:-1]; target = enc["input_ids"][0, n_prompt:]
+    # in pieces, each recomputed on the way back, so a long answer (a big table) never holds its full logits in memory
+    piece = lambda hh, tt: torch.nn.functional.cross_entropy(base.lm_head(hh).float(), tt, reduction="sum")
+    tot = sum(torch.utils.checkpoint.checkpoint(piece, hh, tt, use_reentrant=False) for hh, tt in zip(h.split(1024), target.split(1024)))
+    return tot / target.numel(), target.numel()
 
 
 if __name__ == "__main__":
@@ -77,6 +81,9 @@ if __name__ == "__main__":
     ap.add_argument("--max-len", type=int, default=9000); ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--time-limit", type=float, default=0, help="stop training after this many minutes and save (0: none)")
     ap.add_argument("--probe", type=int, default=0, help="only time this many training steps, save nothing")
+    ap.add_argument("--init-adapter", default="", help="continue training this adapter instead of starting a new one")
+    ap.add_argument("--exclude", default="", help="a split.json from an earlier run: leave out the training pages it used")
+    ap.add_argument("--warmup", type=int, default=20); ap.add_argument("--save-every", type=int, default=0, help="also save the adapter every this many steps")
     a = ap.parse_args()
     import torch, transformers
     from peft import LoraConfig, get_peft_model
@@ -85,7 +92,10 @@ if __name__ == "__main__":
     assert "dev_inputs" not in str(inputs)
     guide = (ROOT / "out/labeller/guide.md").read_text(encoding="utf-8")
     train, val, dropped = split(inputs, answers, a.val_pages, a.seed)
-    train = train[: a.train_pages]
+    if a.exclude:
+        prev = json.load(open(ROOT / a.exclude)); assert prev["val"] == val, "validation pages differ from the earlier run"
+        seen = set(prev["train"]); train = [p for p in train if p not in seen]
+    train = train[: a.train_pages] if a.train_pages > 0 else train
     out.mkdir(parents=True, exist_ok=True)
     json.dump({"train": train, "val": val, "dropped": dropped}, open(out / "split.json", "w"), indent=0)
     print(f"train {len(train)} pages, validation {len(val)} pages ({len({v.split('_p')[0] for v in val})} documents), dropped {len(dropped)}", flush=True)
@@ -95,14 +105,18 @@ if __name__ == "__main__":
     model.config.use_cache = False
     for p in model.parameters(): p.requires_grad_(False)
     targets = r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|in_proj_qkv|in_proj_z|in_proj_a|in_proj_b|out_proj)"
-    model = get_peft_model(model, LoraConfig(r=a.rank, lora_alpha=a.alpha, lora_dropout=a.dropout, target_modules=targets, bias="none"))
+    if a.init_adapter:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, str(ROOT / a.init_adapter), is_trainable=True)
+    else:
+        model = get_peft_model(model, LoraConfig(r=a.rank, lora_alpha=a.alpha, lora_dropout=a.dropout, target_modules=targets, bias="none"))
     model.print_trainable_parameters()
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
     dev = torch.device("cuda")
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=0.0, betas=(0.9, 0.999))
-    steps_total = max(1, math.ceil(len(train) * a.epochs / a.accum)); warm = max(1, min(20, steps_total // 10))
+    steps_total = max(1, math.ceil(len(train) * a.epochs / a.accum)); warm = max(1, min(a.warmup, steps_total // 10))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: (s + 1) / warm if s < warm else 0.5 * (1 + math.cos(math.pi * (s - warm) / max(1, steps_total - warm))) * 0.9 + 0.1)
     val_every = a.val_every or max(1, steps_total // 4)
     hist = {"args": vars(a), "train_pages": len(train), "val_pages": len(val), "steps_total": steps_total, "train": [], "val": []}
@@ -125,9 +139,15 @@ if __name__ == "__main__":
     for i, nm in enumerate(order):
         enc, n_prompt = example(nm, inputs, answers, guide, proc)
         if enc["input_ids"].shape[1] > a.max_len:
-            skipped += 1; continue
-        loss, k = loss_of(model, enc, n_prompt, dev)
-        (loss / a.accum).backward(); run_loss.append(loss.item()); micro += 1
+            skipped += 1; hist.setdefault("skipped_pages", []).append([nm, int(enc["input_ids"].shape[1])]); continue
+        try:
+            loss, k = loss_of(model, enc, n_prompt, dev)
+            (loss / a.accum).backward()
+        except torch.cuda.OutOfMemoryError:  # one page too long for the card: note it, drop its partial gradients' memory, go on
+            loss = None; torch.cuda.empty_cache(); hist.setdefault("oom_pages", []).append([nm, int(enc["input_ids"].shape[1])])
+            print(f"out of memory on {nm} ({enc['input_ids'].shape[1]} tokens), skipped", flush=True); continue
+        run_loss.append(loss.item()); micro += 1
+        if len(enc["input_ids"][0]) > 9000: hist.setdefault("long_pages", []).append([nm, int(enc["input_ids"].shape[1])])
         if micro % a.accum == 0:
             torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step(); sched.step(); opt.zero_grad(set_to_none=True); step += 1
             mean = sum(run_loss) / len(run_loss); run_loss = []
@@ -140,6 +160,8 @@ if __name__ == "__main__":
                 v = validate(val[: a.val_sub]); hist["val"].append({"step": step, "pages": i + 1, "loss": round(v, 4), "subset": a.val_sub})
                 print(f"  validation loss ({a.val_sub} pages) {v:.4f}", flush=True)
                 json.dump(hist, open(out / "history.json", "w"), indent=1)
+            if a.save_every and step % a.save_every == 0:
+                model.save_pretrained(out / "adapter_last"); json.dump({"step": step, "pages": i + 1}, open(out / "adapter_last" / "at.json", "w"))
             if a.time_limit and el / 60 > a.time_limit:
                 print(f"time limit reached after {i+1} pages", flush=True); break
     hist["train_s"] = round(time.time() - t0); hist["skipped_long"] = skipped; hist["pages_seen"] = i + 1

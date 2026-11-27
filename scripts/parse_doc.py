@@ -20,7 +20,8 @@ ap.add_argument("--pages", default="", help="first-last, e.g. 1-3")
 ap.add_argument("--dpi", type=int, default=300)
 ap.add_argument("--line-reader", default="", help="a line-reader checkpoint; reads whole lines in place of the cluster reader")
 ap.add_argument("--lines", default="", help="a line-finder checkpoint; without it lines are chained by rule")
-ap.add_argument("--typer", default="", help="a structure model checkpoint; without it the hand-written rules type the blocks")
+ap.add_argument("--typer", default="out/structure_v2.pt+out/structure_v3.pt",
+                help="a structure checkpoint, or two joined by '+' (the combined typer, the default); '' for the hand-written rules")
 args = ap.parse_args()
 torch.set_num_threads(12)
 out = Path(args.out); (out / "pages").mkdir(parents=True, exist_ok=True)
@@ -35,7 +36,7 @@ if args.typer:
     from ocrl.structure.tag import Typer
     typer = Typer(args.typer)
 infos, blocks = parse(OCR(args.ckpt, linefinder=args.lines or None, line_reader=args.line_reader or None), images, int(args.pages.split("-")[0]) if args.pages else 1, typer)
-how = f"OCRL structure model ({Path(args.typer).stem}), trained on the Desk database, local. Not checked by a person." if typer else ""
+how = f"OCRL structure model ({' + '.join(Path(t).stem for t in args.typer.split('+'))}) with the list rule, local. Not checked by a person." if typer else ""
 master = to_master(doc_id, infos, blocks, args.dpi, Path(args.ckpt).stem, how)
 secs = time.time() - t
 (out / f"{doc_id}.local.master.json").write_text(json.dumps(master, ensure_ascii=False, indent=1), encoding="utf-8")

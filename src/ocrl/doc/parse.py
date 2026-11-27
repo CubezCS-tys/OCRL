@@ -116,10 +116,12 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
         from ..structure.features import ink_features
         for l, f in zip(lines, ink_features(gray, np.array([[l.x0, l.y0, l.x1, l.y1] for l in lines], np.float32))):
             l.ink = tuple(float(v) for v in f)
-    from ..blobs.clean import clean_page
-    # The reader cleaned this page already and kept only its image; cleaning again (about 0.7 s) gives
-    # back the ruled lines it painted out, which are the exact grid of a ruled table.
-    cleaned = clean_page(gray)
+    # The reader cleaned this page already and hands on what it painted out: the ruled lines, which are
+    # the exact grid of a ruled table. (A reader that does not hand it on: clean again, about 0.7 s.)
+    cleaned = getattr(doc, "cleaned", None)
+    if cleaned is None:
+        from ..blobs.clean import clean_page
+        cleaned = clean_page(gray)
     from .tables import short_rules
     grid = cleaned.grid + cleaned.rules
     lh = float(np.median([l.y1 - l.y0 for l in lines])) if lines else 30.0
@@ -385,6 +387,8 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             out.append(cur)
             if kind not in ASIDE and kind not in ("table", "footnote", "figure"):
                 last_flow = cur
+    if len(infos) > 1:
+        _page_furniture(infos, out)
     _join_tables(out)
     order = 0
     for i, b in enumerate(out):
@@ -397,6 +401,50 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             order += 1
             b.order = order
     return out
+
+
+_FOLIO = re.compile(rf"^[\s\-–—()|.]*([{DIGITS}]{{1,4}})[\s\-–—()|.]*$")
+# what the page's place and text can overrule: not a title, an author or a table, which a page's top line can also be
+_OVERRULE = {"paragraph", "heading", "other", "noise", "figure", "figure_caption", "equation", "section_label", "standfirst",
+             "pull_quote", "running_head", "running_foot", "page_number", "list_item", "footnote"}
+
+
+def _page_furniture(infos: list[PageInfo], blocks: list[Block]) -> None:
+    """What only the whole document shows, decided after every page is typed: a number in a page's top or
+    bottom margin that steps by one from page to page is the page number, and a line at the top (or foot)
+    of a page whose words come back at the top (or foot) of another page is a running head (or foot).
+    Only lone lines in the margins are looked at, and the model's own call stands unless the pattern holds
+    on at least two pages."""
+    by_no = {p.number: p for p in infos}
+    carried = {id(b.parent) for b in blocks if b.parent is not None}
+    lone = [b for b in blocks if len(b.lines) == 1 and b.table is None and b.parent is None and id(b) not in carried and b.type in _OVERRULE]
+
+    def band(b) -> str:
+        p = by_no[b.page]
+        _, y0, _, y1 = b.box()
+        return "top" if y1 < 0.12 * p.height else "foot" if y0 > 0.88 * p.height else ""
+
+    # page numbers: the same offset between the printed number and the page's place, on two pages or more
+    folios = []
+    for b in lone:
+        m = _FOLIO.match(strip_marks(b.text))
+        if m and band(b):
+            folios.append((b, int(m.group(1)) - b.page))
+    offsets = {}
+    for b, off in folios:
+        offsets.setdefault(off, set()).add(b.page)
+    for b, off in folios:
+        if len(offsets[off]) >= 2:
+            b.type = "page_number"
+    # running heads and feet: words that come back in the same margin of another page (numbers aside)
+    words = lambda b: " ".join("".join(c for c in strip_marks(b.text) if not c.isdigit()).split())
+    for b in lone:
+        side = band(b)
+        if not side or b.type == "page_number" or len(words(b)) < 6:
+            continue
+        again = any(o.page != b.page and band(o) == side and _similar(words(b), words(o)) > 0.8 for o in lone)
+        if again:
+            b.type = "running_head" if side == "top" else "running_foot"
 
 
 def _join_tables(blocks: list[Block]) -> None:
