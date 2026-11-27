@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import cv2
 import numpy as np
 import torch
 
@@ -191,6 +192,8 @@ class OCR:
         gray = cleaned.gray
         lines = self.finder.lines(gray) if self.finder is not None else None
         lines = split_at_uprights(lines, cleaned.uprights, gray)  # one line per table cell, not two cells as one
+        if CELL_INK and lines is not None:
+            lines = cell_ink(lines, cleaned.uprights, gray)
         ltr = is_ltr(gray)
         ups = np.asarray(cleaned.uprights, np.float32).reshape(-1, 4)
         out = []
@@ -234,6 +237,47 @@ class OCR:
             # digits needs a clearly wider gap. (A prior, not a rule of the script.)
             wide = 1.6 if a.text[-1] in DIGITS and b.text[0] in DIGITS else 1.0
             a.space_after = forced or gap > threshold * wide
+
+
+CELL_INK = True  # ink alone in a ruled table cell that no line holds is a line of its own (cell_ink)
+
+
+def cell_ink(lines: np.ndarray, uprights: list, gray: np.ndarray) -> np.ndarray:
+    """A ruled table's cell holding only a dash or a lone digit: the line finder, trained on lines of words,
+    often marks nothing there, and the cell came out empty. Ink that sits between two uprights of a ruled
+    table (one to its left and one to its right, both running past it), that no line holds, and that is more
+    than a speck (20 pixels of ink, a fifth of a line high or wide) becomes a line of its own, as tight as its
+    ink so that it is a full share of its line's height. `uprights` and `gray` as the cleaner left them."""
+    ups = np.asarray(uprights, np.float32).reshape(-1, 4)
+    if len(ups) < 2 or len(lines) == 0:
+        return lines
+    lh = float(np.median(lines[:, 3] - lines[:, 1]))
+    ink = (gray < 128).astype(np.uint8)
+    # one piece per group of marks set close together ("٠٫٠٠", "- ٣"): join across small gaps
+    k = max(int(0.3 * lh), 1)
+    joined = cv2.dilate(ink, np.ones((max(int(0.15 * lh), 1), k), np.uint8))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
+    add = []
+    for i in range(1, n):
+        x, y, w, h, _ = st[i]
+        piece = ink[y : y + h, x : x + w]
+        rows, cols = np.flatnonzero(piece.any(1)), np.flatnonzero(piece.any(0))
+        if not len(rows) or int(piece.sum()) < 20:  # nothing, or a speck of dust
+            continue
+        x0, y0, x1, y1 = x + cols[0], y + rows[0], x + cols[-1] + 1, y + rows[-1] + 1
+        w, h = x1 - x0, y1 - y0
+        # a dash, a digit or two; not a whole word (the finder sees those), not a leftover of a ruled line
+        if h > 1.5 * lh or w > 4 * lh or max(w, h) < 0.2 * lh or (h < 0.2 * lh and w > 1.2 * lh):
+            continue
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if ((lines[:, 0] - 0.2 * lh <= cx) & (cx <= lines[:, 2] + 0.2 * lh) & (lines[:, 1] - 0.2 * lh <= cy) & (cy <= lines[:, 3] + 0.2 * lh)).any():
+            continue
+        across = (ups[:, 1] < y0 - 0.2 * lh) & (ups[:, 3] > y1 + 0.2 * lh)
+        if (across & (ups[:, 2] <= x0)).any() and (across & (ups[:, 0] >= x1)).any():
+            add.append((x0, y0, x1, y1))
+    if not add:
+        return lines
+    return np.concatenate([lines, np.asarray(add, np.float32)])
 
 
 def _join_marks(res: PageResult, ltr: bool, uprights: np.ndarray) -> None:

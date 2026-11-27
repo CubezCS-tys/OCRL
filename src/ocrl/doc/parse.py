@@ -129,6 +129,95 @@ def read_page(ocr: OCR, gray: np.ndarray, number: int) -> PageInfo:
                     grid, cleaned.uprights, short_rules(gray, grid, cleaned.uprights, lh, [(l.x0, l.y0, l.x1, l.y1) for l in lines]))
 
 
+FOOTNOTE_RULE = True  # running text under a short rule at a column's edge is footnotes (_footnotes_under_rule)
+MARGINS = True  # running heads and feet found across pages before typing (_margin_lines)
+MARKS = True  # look for item marks the reader gave no letter for (unread_marks)
+BULLET = "•"  # what a mark the reader could not read is written as
+
+
+def _lead(ink: np.ndarray, l: TextLine, ltr: bool) -> dict | None:
+    """The first piece of ink on a line, in reading direction (the right-hand end for Arabic): its width,
+    the blank gap after it, its height, its picture, and how much ink the rest of the line spans."""
+    a = ink[max(l.y0, 0) : l.y1, max(l.x0, 0) : l.x1]
+    if not ltr:
+        a = a[:, ::-1]
+    col = a.sum(0) > 0
+    n, i = len(col), 0
+    while i < n and not col[i]:
+        i += 1
+    s = i
+    while i < n and col[i]:
+        i += 1
+    e = i
+    while i < n and not col[i]:
+        i += 1
+    if e <= s or i >= n:
+        return None
+    rows = np.flatnonzero(a[:, s:e].sum(1) > 0)
+    return {"w": e - s, "gap": i - e, "h": int(rows[-1] - rows[0] + 1), "pic": a[rows[0] : rows[-1] + 1, s:e], "rest": n - i}
+
+
+def _same_shape(a: np.ndarray, b: np.ndarray) -> float:
+    """Overlap of two small pictures brought to one size (1 = the same shape)."""
+    A = cv2.resize(a.astype(np.uint8) * 255, (24, 24), interpolation=cv2.INTER_AREA) > 64
+    B = cv2.resize(b.astype(np.uint8) * 255, (24, 24), interpolation=cv2.INTER_AREA) > 64
+    return float((A & B).sum()) / max(int((A | B).sum()), 1)
+
+
+def unread_marks(page: PageInfo, gray: np.ndarray) -> int:
+    """Put a bullet at the head of lines that open with an item mark the reader gave no letter for.
+
+    Ornamental marks (a pointing hand, a four-diamond sign) are not in the reader's alphabet: their ink is
+    inside the line but its text starts at the word after them, so nothing downstream knows an item opens
+    there. The page still shows it. A line counts when its first piece of ink is small (at most about one
+    and a half letters wide, no taller than a letter), set off by a gap, too narrow to hold the first
+    word the reader gave (so the reader did not read it as that word), and the same shape stands at the
+    same place at the head of another line of the column: one mark repeated down a list. Numbers and
+    cells of a table row are left alone: a list mark opens words, and a cell has neighbours level with it.
+    Returns how many lines were marked."""
+    from ..blobs.regions import is_ltr
+    from ..structure.tag import _ITEM
+
+    if not page.lines:
+        return 0
+    ink = binarize(gray)
+    ltr = is_ltr(gray)
+    ls = page.lines
+    cand = {}
+    for k, l in enumerate(ls):
+        t = strip_marks(l.text).strip()
+        if not t or _ITEM.match(t):
+            continue
+        w0 = t.split()[0]
+        if sum(c.isalpha() for c in w0) < 2:
+            continue
+        if any(o is not l and o.region == l.region and min(o.y1, l.y1) - max(o.y0, l.y0) > 0.5 * min(o.y1 - o.y0, l.y1 - l.y0) for o in ls):
+            continue
+        L = _lead(ink, l, ltr)
+        sc = l.scale
+        if L is None or not (0.25 * sc <= L["w"] <= 1.6 * sc and L["h"] <= 1.4 * sc and L["gap"] >= 0.45 * sc):
+            continue
+        per_letter = L["rest"] / max(len(t.replace(" ", "")), 1)
+        if len(w0) * per_letter < 1.5 * L["w"]:
+            continue  # the reader's first word would fit in that ink: it is that word
+        cand[k] = L
+    hits = set()
+    for a, A in cand.items():
+        la = ls[a]
+        for b, B in cand.items():
+            lb = ls[b]
+            if b == a or la.region != lb.region:
+                continue
+            sc = max(la.scale, lb.scale)
+            edge = abs((la.x0 - lb.x0) if ltr else (la.x1 - lb.x1))
+            if edge < 0.4 * sc and abs(A["w"] - B["w"]) < 0.25 * max(A["w"], B["w"]) and _same_shape(A["pic"], B["pic"]) > 0.6:
+                hits.add(a)
+                break
+    for k in hits:
+        ls[k].text = BULLET + " " + ls[k].text.strip()
+    return len(hits)
+
+
 def _cut_blocks(page: PageInfo) -> list[Block]:
     """Blocks of one page, in reading order: each column's lines, cut where a paragraph ends."""
     blocks: list[Block] = []
@@ -189,6 +278,8 @@ def parse(ocr: OCR, pages: list[np.ndarray], first: int = 1, typer=None,
     infos = []
     for n, g in enumerate(pages, first):
         infos.append(read_page(ocr, g, n))
+        if MARKS:
+            unread_marks(infos[-1], g)
         if progress is not None:
             progress(len(infos), len(pages))
     if typer is not None:
@@ -343,18 +434,48 @@ def parse(ocr: OCR, pages: list[np.ndarray], first: int = 1, typer=None,
     return infos, out
 
 
+def _margin_words(text: str) -> str:
+    """A line's words without its digits (a running head carries the page number, or a year that changes)."""
+    return " ".join("".join(c for c in strip_marks(text) if not c.isdigit()).split())
+
+
+def _margin_lines(infos: list[PageInfo]) -> list[dict[int, str]]:
+    """Per page, the lines (by index in page.lines) in the top or bottom margin whose words stand in the same
+    margin of another page: a running head or foot, even when it was set on two lines and the second sits
+    close above the text. Only with two pages or more."""
+    out: list[dict[int, str]] = [{} for _ in infos]
+    if len(infos) < 2:
+        return out
+    seen = []
+    for k, p in enumerate(infos):
+        for i, l in enumerate(p.lines):
+            side = "top" if l.y1 < 0.12 * p.height else "foot" if l.y0 > 0.88 * p.height else ""
+            w = _margin_words(l.text)
+            if side and len(w) >= 6 and not _REF_MARK.match(l.text.strip()):  # a numbered note ("ibid.") comes back too
+                seen.append((k, i, side, w, (l.y0 + l.y1) / 2, l.y1 - l.y0))
+    # the same words at the same height on the page: a note that repeats sits wherever its page's notes end
+    for k, i, side, w, y, h in seen:
+        if any(k2 != k and s2 == side and abs(y2 - y) < 1.5 * max(h, h2) and _similar(w, w2) > 0.8 for k2, _, s2, w2, y2, h2 in seen):
+            out[k][i] = "running_head" if side == "top" else "running_foot"
+    return out
+
+
 def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
     """Blocks from the structure model: it names each line and marks where blocks begin; we only group."""
     from ..structure.tag import ASIDE, TO_TYPE
 
     out: list[Block] = []
     last_flow: Block | None = None  # the last block in the running text, for one that carries on
-    for p in infos:
+    margins = _margin_lines(infos) if MARGINS else [{} for _ in infos]
+    for p, margin in zip(infos, margins):
         ls = sorted(p.lines, key=lambda l: (l.region, l.order))
         if not ls:
             continue
         ink = np.array([l.ink for l in ls], np.float32) if all(len(l.ink) == 3 for l in ls) else None
-        roles, starts, _ = typer.tag(np.array([[l.x0, l.y0, l.x1, l.y1] for l in ls]), [l.text for l in ls], p.width, p.height, ink)
+        at = {id(l): i for i, l in enumerate(ls)}
+        margin = {at[id(p.lines[i])]: kind for i, kind in margin.items()}
+        roles, starts, _ = typer.tag(np.array([[l.x0, l.y0, l.x1, l.y1] for l in ls]), [l.text for l in ls], p.width, p.height, ink,
+                                     **({"margin": margin} if margin else {}))
         kinds = [TO_TYPE.get(r, "other") for r in roles]
         # One block per table, put together from its cells (tables.py), standing where its first line is read.
         found = find_tables(p, ls, kinds)
@@ -387,6 +508,9 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             out.append(cur)
             if kind not in ASIDE and kind not in ("table", "footnote", "figure"):
                 last_flow = cur
+    if FOOTNOTE_RULE:
+        _footnotes_under_rule(infos, out)
+    _references_go_on(infos, out)
     if len(infos) > 1:
         _page_furniture(infos, out)
     _join_tables(out)
@@ -401,6 +525,61 @@ def _typed_blocks(infos: list[PageInfo], typer) -> list[Block]:
             order += 1
             b.order = order
     return out
+
+
+_UNDER_RULE = {"paragraph", "list_item", "other", "standfirst", "pull_quote", "verse", "abstract"}  # what a footnote gets called
+
+
+def _footnotes_under_rule(infos: list[PageInfo], blocks: list[Block]) -> None:
+    """Footnotes stand under a short rule: a stroke a fifth to a half of the column wide, starting at the
+    column's edge (the right for Arabic, the left for Latin), in the lower part of the page, with the body text
+    above it and clear air above and below it (an underline has its words sitting on it). Running text below such a rule, in that column, is footnotes, whatever its first line looks like
+    (a numbered note reads like a list item, a note's second paragraph like a paragraph)."""
+    by_no = {p.number: p for p in infos}
+    cuts: dict[int, list[tuple[int, int, int]]] = {}
+    for p in infos:
+        if not p.lines:
+            continue
+        lh = float(np.median([l.y1 - l.y0 for l in p.lines]))
+        for r in p.rules:
+            if r[1] < 0.4 * p.height:
+                continue
+            span = [l for l in p.lines if l.x1 > r[0] and l.x0 < r[2]]
+            if not span:
+                continue
+            cx0, cx1 = min(l.x0 for l in span), max(l.x1 for l in span)
+            w = (r[2] - r[0]) / max(cx1 - cx0, 1)
+            flush = abs(r[2] - cx1) < 1.5 * lh or abs(r[0] - cx0) < 1.5 * lh
+            # clear of text above and below: an underline has its words sitting on it
+            clear = not any(r[1] - 0.6 * lh < l.y1 and l.y0 < r[3] + 0.3 * lh for l in span)
+            if 0.2 <= w <= 0.5 and flush and clear and sum(l.y1 <= r[1] for l in span) >= 3:
+                cuts.setdefault(p.number, []).append((r[1], cx0, cx1))
+    if not cuts:
+        return
+    for b in blocks:
+        if b.type not in _UNDER_RULE or b.table is not None or b.page not in cuts:
+            continue
+        x0, y0, x1, _ = b.box()
+        if any(y0 >= ry and min(x1, cx1) - max(x0, cx0) > 0.5 * (x1 - x0) for ry, cx0, cx1 in cuts[b.page]):
+            b.type = "footnote"
+
+
+def _references_go_on(infos: list[PageInfo], blocks: list[Block]) -> None:
+    """A list of references does not turn into footnotes halfway down. Numbered entries under a references
+    heading, or straight after references with nothing between them, are references too, though each looks
+    like a footnote (a number in brackets, small type, a source cited): a footnote stands under a rule at the
+    foot of the text it annotates, so one with a rule above it, or with body text between, keeps its name."""
+    by_no = {p.number: p for p in infos}
+    prev: Block | None = None  # the last block in the reading order (page furniture aside)
+    for b in blocks:
+        if b.type in ("running_head", "running_foot", "page_number", "noise"):
+            continue
+        if b.type == "footnote" and prev is not None and b.page == prev.page and (
+                prev.type == "reference" or (prev.type == "heading" and _is_ref_heading(prev.text))):
+            top, above = b.box()[1], prev.box()[3]
+            if not any(above <= r[1] <= top for r in by_no[b.page].rules + by_no[b.page].grid):
+                b.type = "reference"
+        prev = b
 
 
 _FOLIO = re.compile(rf"^[\s\-–—()|.]*([{DIGITS}]{{1,4}})[\s\-–—()|.]*$")

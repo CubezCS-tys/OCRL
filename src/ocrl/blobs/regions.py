@@ -287,6 +287,62 @@ def split_at_uprights(lines: np.ndarray, uprights: list[tuple[int, int, int, int
     return np.array(out, np.float32).reshape(-1, 4)
 
 
+WHOLE_LINES = True  # a region reaches out to the whole of each line it holds (_whole_lines)
+
+
+def _whole_lines(gray: np.ndarray, regions: list[Region], owned: list[np.ndarray], lines: np.ndarray, ltr: bool = False):
+    """A region found from whitespace between letters can cut a line in two: a wide word space over a
+    few short lines looks like a gutter. The line finder saw one line there, and the region that holds its
+    centre reads it, so that region is widened to take in the whole line, and the stretch of line that lay
+    in the neighbouring region is painted out of that region's image (it would be read twice otherwise).
+    A line cut that way goes to the region its first word is in (the right-hand one for Arabic), so that it is
+    read in its place, not after the region beside it.
+    Returns the regions, and the page image each one is to be cropped from. `owned` is updated in place."""
+    cy = (lines[:, 1] + lines[:, 3]) / 2
+    h_all = lines[:, 3] - lines[:, 1]
+    sx = lines[:, 0] + 0.5 * h_all if ltr else lines[:, 2] - 0.5 * h_all  # where each line begins
+    for k, (r, mask) in enumerate(zip(regions, owned)):
+        out_of = mask & ((lines[:, 0] < r.x0 - 0.5 * h_all) | (lines[:, 2] > r.x1 + 0.5 * h_all)) & ~((sx >= r.x0) & (sx <= r.x1))
+        for i in np.flatnonzero(out_of):
+            for j, o in enumerate(regions):
+                if j != k and o.x0 <= sx[i] <= o.x1 and o.y0 <= cy[i] <= o.y1:
+                    owned[k][i], owned[j][i] = False, True
+                    break
+    over: list[list[tuple[int, int, int, int]]] = [[] for _ in regions]  # what each region gives up
+    H, W = gray.shape
+    for k, (r, mask) in enumerate(zip(regions, owned)):
+        mine = lines[mask]
+        if not len(mine):
+            continue
+        h = mine[:, 3] - mine[:, 1]
+        sticks = mine[(mine[:, 0] < r.x0 - 0.5 * h) | (mine[:, 2] > r.x1 + 0.5 * h)]
+        # Not where the stretch outside holds a line of the neighbour's own: then it is the finder that ran
+        # two columns' lines together, and the neighbour's line is the one to keep.
+        others = lines[~mask]
+        sticks = [s for s in sticks if not len(others) or not (
+            (np.minimum(others[:, 3], s[3]) - np.maximum(others[:, 1], s[1]) > 0.3 * (s[3] - s[1]))
+            & (np.minimum(others[:, 2], s[2]) - np.maximum(others[:, 0], s[0]) > 0)).any()]
+        if not len(sticks):
+            continue
+        boxes = [(max(int(x0) - 2, 0), max(int(y0), 0), min(int(x1) + 3, W), min(int(y1) + 1, H)) for x0, y0, x1, y1 in sticks]
+        for j, o in enumerate(regions):
+            if j != k:
+                over[j] += [b for b in boxes if min(b[2], o.x1) > max(b[0], o.x0) and min(b[3], o.y1) > max(b[1], o.y0)]
+        nx0, ny0 = min(r.x0, min(b[0] for b in boxes)), min(r.y0, min(b[1] for b in boxes))
+        nx1, ny1 = max(r.x1, max(b[2] for b in boxes)), max(r.y1, max(b[3] for b in boxes))
+        regions[k] = Region(nx0, ny0, nx1, ny1, (r.parts or [(r.x0, r.y0, r.x1, r.y1)]) + boxes)
+    imgs = []
+    for k in range(len(regions)):
+        if not over[k]:
+            imgs.append(gray)
+            continue
+        g = gray.copy()
+        for x0, y0, x1, y1 in over[k]:
+            g[y0:y1, x0:x1] = 255
+        imgs.append(g)
+    return regions, imgs
+
+
 def plan(gray: np.ndarray, rules: list[tuple[int, int, int, int]] | None = None, lines: np.ndarray | None = None, pad: int = 16,
          from_lines: bool = False):
     """Everything the page is cut into, in reading order: [(region, its image, hints or None, rank or None)].
@@ -307,14 +363,20 @@ def plan(gray: np.ndarray, rules: list[tuple[int, int, int, int]] | None = None,
         # Columns are read in the script's direction, and within a region, lines level with each other (the
         # cells of a table row, an author beside a date) are read in it too, then the next row down.
         cx, cy = (lines[:, 0] + lines[:, 2]) / 2, (lines[:, 1] + lines[:, 3]) / 2
+        regions = find_regions(gray, rules=rules, ltr=ltr)
+        owned = [(cx >= r.x0) & (cx <= r.x1) & (cy >= r.y0) & (cy <= r.y1) for r in regions]
+        if WHOLE_LINES:
+            regions, gray_of = _whole_lines(gray, regions, owned, lines, ltr)
+        else:
+            gray_of = [gray] * len(regions)
         out = []
-        for r in find_regions(gray, rules=rules, ltr=ltr):
-            mine = lines[(cx >= r.x0) & (cx <= r.x1) & (cy >= r.y0) & (cy <= r.y1)]
+        for r, mask, g in zip(regions, owned, gray_of):
+            mine = lines[mask]
             rank = None
             if len(mine):
                 rank = np.empty(len(mine), np.int64)
                 rank[_rows(mine, float(np.median(mine[:, 3] - mine[:, 1])), ltr)] = np.arange(len(mine))
-            out.append((r, r.crop(gray, pad), local(r, mine), rank))
+            out.append((r, r.crop(g, pad), local(r, mine), rank))
         return out
     work, out = gray.copy(), []
     for r, idx, rank in line_regions(lines, gray.shape, rules, ltr):

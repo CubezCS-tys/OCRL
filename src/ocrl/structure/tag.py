@@ -114,10 +114,14 @@ def list_items(roles: list[str], starts: np.ndarray, texts: list[str], boxes: np
         return roles, starts, False
     roles, starts = list(roles), starts.copy()
 
-    def run(j: int, hh: float) -> tuple[int, bool]:
-        """Carry an item on from line j. Returns the first line past it, and whether it was cut off unfinished."""
+    def run(j: int, hh: float, top: bool = False) -> tuple[int, bool]:
+        """Carry an item on from line j. Returns the first line past it, and whether it was cut off unfinished.
+        With `top`, line j is the page's first line of text and goes on the item whatever stands above it."""
+        j0 = j
         while j < n and not marked[j] and roles[j] in flow:
-            if j > 0 and y0[j] < y0[j - 1] - hh:  # head of the next column: the item goes on only if it was not finished
+            if top and j == j0:
+                pass
+            elif j > 0 and y0[j] < y0[j - 1] - hh:  # head of the next column: the item goes on only if it was not finished
                 if short(j - 1):
                     return j, False
             elif j > 0 and (y0[j] - y1[j - 1] > hh or short(j - 1)):
@@ -127,20 +131,58 @@ def list_items(roles: list[str], starts: np.ndarray, texts: list[str], boxes: np
         return j, j == n and n > 0 and not short(n - 1)
 
     still_open = False
-    if open_item and n and not marked[0] and roles[0] in flow:
-        j, still_open = run(0, h[0])
-        if 0 < j < n and not marked[j]:
+    # The page's running head, page number and specks stand outside the text: an item carried over from the
+    # page before goes on at the first line of text, and one that runs to the last line of text before the
+    # page number is still open at the foot.
+    aside = ASIDE | {"pageHeader", "pageNumber", "pageFooter", "pictureJunk", "showThrough"}
+    first = next((k for k in range(n) if roles[k] not in aside), n)
+    last = max((k for k in range(n) if roles[k] not in aside), default=-1)
+    if open_item and first < n and not marked[first] and roles[first] in flow:
+        j, still_open = run(first, h[first], top=True)
+        if first < j < n and not marked[j]:
             starts[j] = max(starts[j], 0.6)
+        if j < n and j > last and first <= last:
+            still_open = not short(last)
     for i in range(n):
         if not marked[i]:
             continue
         starts[i] = 1.0
         roles[i] = "list-item"
         j, cut = run(i + 1, h[i]) if i + 1 < n else (n, not short(i))
-        still_open = cut if j == n else False
+        still_open = cut if j == n else (j > last and not short(j - 1))  # only page furniture after it
         if j < n and not marked[j]:
             starts[j] = max(starts[j], 0.6)  # whatever follows an item begins its own block
     return roles, starts, still_open
+
+
+ENDS = True  # a short line that closes its sentence ends its paragraph (_paragraph_ends)
+
+
+def _paragraph_ends(starts: np.ndarray, texts: list[str], boxes: np.ndarray, ltr: bool = False) -> np.ndarray:
+    """Set in justified type, every line of a paragraph but its last runs the column's full width. A line that
+    stops short by more than a letter or two and ends its sentence (a full stop, a question or exclamation
+    mark, a colon) closes its paragraph, so the next line in the same column opens a new block, indent or no
+    indent. Only where the column is plain running text: the line before and the line after are about as
+    wide as the column, and the next line sits directly below."""
+    n = len(texts)
+    x0, y0, x1, y1 = (np.asarray(boxes, np.float32)[:, k] for k in range(4))
+    h = np.maximum(y1 - y0, 1)
+    out = starts.copy()
+    for i in range(1, n):
+        a = i - 1
+        if not _STOP.search(texts[a]) or not (0 < y0[i] - y1[a] < 1.5 * h[i]):
+            continue
+        near = [k for k in range(max(a - 8, 0), min(a + 9, n)) if min(x1[a], x1[k]) - max(x0[a], x0[k]) > 0.5 * min(x1[a] - x0[a], x1[k] - x0[k])]
+        lo, hi = float(np.percentile(x0[near], 10)), float(np.percentile(x1[near], 90))
+        width = hi - lo
+        if len(near) < 4 or width < 8 * h[a]:
+            continue
+        lack = (hi - x1[a]) if ltr else (x0[a] - lo)  # the end of the line falls short of the column's far edge
+        head = (x0[a] - lo) if ltr else (hi - x1[a])  # and it starts at the near edge (or an indent)
+        nxt = x1[i] - x0[i]
+        if lack > 1.5 * h[a] and head < 3 * h[a] and nxt > 0.6 * width and min(x1[i], hi) - max(x0[i], lo) > 0.6 * width:
+            out[i] = max(out[i], 0.6)
+    return out
 
 
 @torch.no_grad()
@@ -201,6 +243,10 @@ def _one_type_per_block(q: np.ndarray, starts: np.ndarray, marked: list[bool], i
     return roles
 
 
+# what a line the whole document shows to be page furniture may have been called before
+_MARGIN_OVER = {"paragraph", "heading", "other", "noise", "list_item", "footnote", "standfirst", "pull_quote", "section_label",
+                "figure", "figure_caption", "running_head", "running_foot"}
+
 DEFAULT = "out/structure_v2.pt+out/structure_v3.pt"  # what the upload page and parse_doc.py use
 
 
@@ -221,9 +267,11 @@ class Typer:
         self.weights = (0.3, 0.7) if len(self.models) == 2 else [1.0 / len(self.models)] * len(self.models)
 
     def tag(self, boxes: np.ndarray, texts: list[str], page_w: float, page_h: float, ink: np.ndarray | None = None,
-            crops: np.ndarray | None = None):
+            crops: np.ndarray | None = None, margin: dict[int, str] | None = None):
         """boxes [n, 4] pixels; ink: features.ink_features for the same lines, for a model trained with them;
-        crops: features.line_crops for the same lines, for a model that looks at them.
+        crops: features.line_crops for the same lines, for a model that looks at them; margin: lines the
+        whole document shows to be a running head or foot ({line: "running_head" | "running_foot"}, see
+        ocrl.doc.parse._margin_lines), taken as such unless the models call them a table, title or the like.
         Returns (role per line, P(line starts a block), P(role))."""
         n = len(texts)
         if n == 0:
@@ -240,9 +288,18 @@ class Typer:
             q = sum(w * qk for w, qk in zip(self.weights, qs))
             conf = q.max(1)
             starts = outs[0][1].copy()
+            if ENDS:
+                latin = sum(c.isascii() and c.isalpha() for t in texts for c in t)
+                starts = _paragraph_ends(starts, texts, boxes, ltr=latin > 0.5 * sum(c.isalpha() for t in texts for c in t))
             marked = [bool(_ITEM.match(strip_marks(t))) for t in texts]
             itemish = np.any([qk.argmax(1) == TYPES.index("list_item") for qk in qs], axis=0)
             roles = _one_type_per_block(q, starts, marked, itemish)
+        for i, kind in (margin or {}).items():
+            if TO_TYPE.get(roles[i], "other") in _MARGIN_OVER:
+                roles[i] = kind if not alone else {"running_head": "pageHeader", "running_foot": "pageFooter"}[kind]
+                starts[i] = 1.0
+                if i + 1 < n:
+                    starts[i + 1] = max(starts[i + 1], 0.6)
         if self.lists:  # `open_item` carries an unfinished item over the page break; reset it for a new document
             # combined, one mark is enough when the models also call that line an item
             roles, starts, self.open_item = list_items(roles, starts, texts, boxes, self.open_item, single=not alone)

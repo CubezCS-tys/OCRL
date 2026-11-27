@@ -9,7 +9,8 @@
 #
 # Settings (environment):  LPORT=8090 (laptop end of the tunnel; 8090 reaches Windows from WSL2, 8766 did not)
 #   MAXPAGES=120  THREADS=8  CPU=1 (run serve.py on the machine's CPU, for when the GPU is full)
-#   DRY=1 (print the rent / destroy commands instead of running them)
+#   DRY=1 (print the rent / destroy commands instead of running them; start first lists the models and the
+#          serve.py command it would use, and stops there when no machine is up)
 #   "Other jobs" for --down: any python process, or a box.sh run wrapper (bash ... PYTHONUNBUFFERED) between steps.
 #
 # The page's code goes to /work/platform/{src,scripts}, not /work/src: other jobs on the machine import /work/src
@@ -22,6 +23,11 @@ KEY=$HOME/.ssh/id_ed25519_vast
 LPORT=${LPORT:-8090}; MAXPAGES=${MAXPAGES:-120}; THREADS=${THREADS:-8}
 READER=/home/yassine/data/inkscript_labelled/experiments/89_final_reader/out/weights/v7/last.pt   # copied, never changed
 WINCURL=/mnt/c/Windows/System32/curl.exe
+# The models the page needs (laptop file:name in /work/out) and how serve.py is started with them: the structure
+# step is the combined typer, two models joined by '+', as serve.py and parse_doc.py use by default.
+MODELS=("$ROOT/out/recognizer_v3.pt:recognizer_v3.pt" "$ROOT/out/linefinder.pt:linefinder.pt"
+        "$ROOT/out/structure_v2.pt:structure_v2.pt" "$ROOT/out/structure_v3.pt:structure_v3.pt" "$READER:reader_v7.pt")
+SERVE_ARGS="--reader out/reader_v7.pt --lines out/linefinder.pt --typer out/structure_v2.pt+out/structure_v3.pt"
 
 say() { echo "platform: $*"; }
 die() { echo "platform: $*" >&2; exit 1; }
@@ -83,6 +89,12 @@ rent() {
 }
 
 start() {
+  if [ "${DRY:-0}" = 1 ]; then   # what would be copied and run; contacts no machine and no offer list
+    for pair in "${MODELS[@]}"; do src=${pair%%:*}; [ -f "$src" ] || die "missing model $src"; say "DRY: model $src -> /work/out/${pair##*:}"; done
+    say "DRY: code src/ scripts/ -> /work/platform"
+    say "DRY: would start: python platform/scripts/serve.py $SERVE_ARGS --max-pages $MAXPAGES --threads $THREADS --port <first free from 8765>"
+    alive || { say "DRY: no machine is up; stopping here (nothing rented)"; exit 0; }
+  fi
   if ! alive; then
     [ -f "$BOXENV" ] && say "out/gpu/box.env names machine $ID but it does not answer over SSH"
     if [ "$1" != "--rent" ]; then
@@ -106,9 +118,8 @@ start() {
     rm -rf "$S"
     # models: upload only those missing or different on the machine
     S=$(mktemp -d); need=0
-    have=$(rsh "cd /work/out && md5sum recognizer_v3.pt linefinder.pt structure_v2.pt reader_v7.pt 2>/dev/null")
-    for pair in "$ROOT/out/recognizer_v3.pt:recognizer_v3.pt" "$ROOT/out/linefinder.pt:linefinder.pt" \
-                "$ROOT/out/structure_v2.pt:structure_v2.pt" "$READER:reader_v7.pt"; do
+    have=$(rsh "cd /work/out && md5sum ${MODELS[*]##*:} 2>/dev/null")
+    for pair in "${MODELS[@]}"; do
       src=${pair%%:*}; dst=${pair##*:}; [ -f "$src" ] || { rm -rf "$S"; die "missing model $src"; }
       if echo "$have" | grep -q "^$(md5sum < "$src" | cut -d' ' -f1)  $dst\$"; then continue; fi
       cp "$src" "$S/$dst"; need=1; say "will upload $dst"
@@ -132,7 +143,7 @@ for p in range(8765, 8800):
 \"" | tail -1)
     [ -n "$RPORT" ] || die "no free port on the machine"
     say "starting serve.py on $DEV, port $RPORT, up to $MAXPAGES pages, $THREADS threads"
-    "$G/box.sh" run platform_serve "echo \$BASHPID > logs/platform_serve.pid; $CUDA export PYTHONPATH=/work/platform/src; exec python platform/scripts/serve.py --reader out/reader_v7.pt --lines out/linefinder.pt --typer out/structure_v2.pt --max-pages $MAXPAGES --threads $THREADS --port $RPORT" > /dev/null
+    "$G/box.sh" run platform_serve "echo \$BASHPID > logs/platform_serve.pid; $CUDA export PYTHONPATH=/work/platform/src; exec python platform/scripts/serve.py $SERVE_ARGS --max-pages $MAXPAGES --threads $THREADS --port $RPORT" > /dev/null
     sleep 2; SPID=$(rsh "cat logs/platform_serve.pid" | tail -1); PBOX=$ID; PT0=$(date +%s); TPID=; TPORT=; savep
     for i in $(seq 60); do   # up to 5 minutes for the models to load
       L=$(rsh "grep -a -m1 '^ready' logs/platform_serve.log; ls logs/platform_serve.failed logs/platform_serve.done 2>/dev/null")
