@@ -31,11 +31,20 @@ def test_latex_ok():
 class _Fake(BaseHTTPRequestHandler):
     answers = []  # one per request, in turn
     seen = []
+    by_width = False
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         type(self).seen.append(body)
-        ans = type(self).answers[len(type(self).seen) - 1]
+        # Formula requests are sent side by side, so they may arrive in either order: when `by_width` is set the
+        # answer is chosen by the picture's width (narrow first answer, wide second), not by arrival.
+        if type(self).by_width:
+            import base64, cv2
+            url = body["messages"][0]["content"][0]["image_url"]["url"]
+            img = cv2.imdecode(np.frombuffer(base64.b64decode(url.split(",", 1)[1]), np.uint8), cv2.IMREAD_GRAYSCALE)
+            ans = type(self).answers[int(img.shape[1] > 1000)]
+        else:
+            ans = type(self).answers[len(type(self).seen) - 1]
         out = json.dumps({"choices": [{"message": {"content": ans}}]}).encode()
         self.send_response(200); self.send_header("Content-Length", str(len(out))); self.end_headers(); self.wfile.write(out)
 
@@ -43,15 +52,15 @@ class _Fake(BaseHTTPRequestHandler):
         pass
 
 
-def _server(answers):
-    _Fake.answers, _Fake.seen = answers, []
+def _server(answers, by_width=False):
+    _Fake.answers, _Fake.seen, _Fake.by_width = answers, [], by_width
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _Fake)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
 
 def test_read_formulas_counts_and_falls_back(tmp_path):
-    srv = _server(["$$x^2$$", "\\frac{1}{2"])
+    srv = _server(["$$x^2$$", "\\frac{1}{2"], by_width=True)
     try:
         t = Q.QwenTyper(f"qwen:http://127.0.0.1:{srv.server_port}?workers=1;cache={tmp_path}")
         crops = {"a": np.full((40, 120), 255, np.uint8), "b": np.zeros((40, 3000), np.uint8)}
