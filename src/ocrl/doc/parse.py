@@ -85,6 +85,7 @@ class Block:
     # for a figure made from a picture the cleaner found: (page, box in pixels, "photograph" or "drawing"); its
     # lines are the words printed inside the picture (a map's place names), and a masked photograph has none
     picture: tuple | None = None
+    latex: dict | None = None  # for an equation: {page: its picture there read as LaTeX} (structure/qwen.py read_formulas)
 
     @property
     def text(self) -> str:
@@ -330,7 +331,10 @@ def parse(ocr: OCR, pages: list[np.ndarray], first: int = 1, typer=None,
     if typer is not None:
         if hasattr(typer, "prepare"):  # a typer that looks at the pictures asks for every page at once (structure/qwen.py)
             typer.prepare(infos, pages)
-        return infos, _typed_blocks(infos, typer)
+        blocks = _typed_blocks(infos, typer)
+        if hasattr(typer, "read_formulas") and EQUATION_PICTURE:  # the same model reads each formula's picture as LaTeX
+            _read_formulas(infos, pages, first, blocks, typer)
+        return infos, blocks
     by_no = {p.number: p for p in infos}
     per_page = [_cut_blocks(p) for p in infos]
 
@@ -1303,6 +1307,7 @@ def to_master(doc_id: str, infos: list[PageInfo], blocks: list[Block], dpi: int 
 
 EQUATION_PICTURE = True  # an equation block is shown as its picture: nothing here can transcribe a formula
 EQ_MARGIN = 0.04  # inch of scan kept round an equation's lines
+LATEX_BY = "the vision-language model on the GPU machine (Qwen3.5-9B fine-tuned), from the picture; not checked"
 
 
 def shows_words(text: str) -> bool:
@@ -1326,21 +1331,61 @@ def _picture_entry(entry: dict, b: Block, dpi: int) -> None:
     entry["picture"] = [{"page": page, "box": inch, "kind": kind}]
 
 
-def _equation_entry(entry: dict, group: list[Block], infos: list[PageInfo], dpi: int) -> None:
-    """An equation block: the line reader cannot read a formula, so the viewer shows the formula's picture, a
-    crop of the scan round all its lines (a small margin, kept on the page). Its line texts stay as they are."""
+def _equation_boxes(group: list[Block], infos: list[PageInfo], dpi: int) -> list[tuple[int, tuple]]:
+    """An equation's picture on each page it is on: (page, box in pixels) round all its lines there, a small margin
+    kept on the page."""
     size = {p.number: (p.width, p.height) for p in infos}
     m = EQ_MARGIN * dpi
-    pics = []
+    out = []
     for page in dict.fromkeys(l.page for g in group for l in g.lines):
         ls = [l for g in group for l in g.lines if l.page == page]
         W, H = size.get(page, (10 ** 9, 10 ** 9))
-        box = (max(min(l.x0 for l in ls) - m, 0), max(min(l.y0 for l in ls) - m, 0),
-               min(max(l.x1 for l in ls) + m, W), min(max(l.y1 for l in ls) + m, H))
+        out.append((page, (max(min(l.x0 for l in ls) - m, 0), max(min(l.y0 for l in ls) - m, 0),
+                           min(max(l.x1 for l in ls) + m, W), min(max(l.y1 for l in ls) + m, H))))
+    return out
+
+
+def _read_formulas(infos: list[PageInfo], pages: list[np.ndarray], first: int, blocks: list[Block], typer, dpi: int = 300) -> None:
+    """Every equation's picture (as the viewer will show it) read as LaTeX by the typer's model; kept on the
+    equation's first block as {page: LaTeX}. Nothing asked when the document has no equation."""
+    if not hasattr(pages, "__getitem__"):
+        return
+    crops = {}
+    for b in blocks:
+        if b.type != "equation" or b.parent is not None or b.picture is not None or not b.lines:
+            continue
+        group = [b] + [o for o in blocks if o.parent is b]
+        for page, (x0, y0, x1, y1) in _equation_boxes(group, infos, dpi):
+            if 0 <= page - first < len(pages):
+                c = pages[page - first][int(y0):int(y1) + 1, int(x0):int(x1) + 1]
+                if c.size:
+                    crops[(id(b), page)] = c
+    if not crops:
+        return
+    got = typer.read_formulas(crops)
+    for b in blocks:
+        tex = {page: t for (k, page), t in got.items() if k == id(b)}
+        if tex:
+            b.latex = tex
+
+
+def _equation_entry(entry: dict, group: list[Block], infos: list[PageInfo], dpi: int) -> None:
+    """An equation block: the line reader cannot read a formula, so the viewer shows the formula's picture, a
+    crop of the scan round all its lines (a small margin, kept on the page). Its line texts stay as they are.
+    When the vision model read the picture (_read_formulas), each picture has its "latex", and the block has
+    "latex" (the pictures' LaTeX, a line each) with "latex_by" saying who read it; nobody checked it."""
+    tex = group[0].latex or {}
+    pics = []
+    for page, box in _equation_boxes(group, infos, dpi):
         pics.append({"page": page, "box": [round(v / dpi, 3) for v in box], "kind": "formula"})
+        if page in tex:
+            pics[-1]["latex"] = tex[page]
     entry["shown_as"] = "picture"
     entry["picture"] = pics
     entry["text_shown"] = shows_words(entry["text"])  # running text called an equation keeps its words in view
+    if pics and all("latex" in p for p in pics):
+        entry["latex"] = "\n".join(p["latex"] for p in pics)
+        entry["latex_by"] = LATEX_BY
 
 
 def _page_entry(p: PageInfo, dpi: int) -> dict:

@@ -203,6 +203,12 @@ def _picture_html(b: dict, master: dict, spans: str, d: str) -> str:
     pages = {p["number"]: p for p in master["pages"]}
     crops = "".join(_crop(pc, pages[pc["page"]]) for pc in b["picture"] if pc["page"] in pages)
     lang = "ar" if d == "rtl" else "en"
+    if b["type"] == "equation" and b.get("latex"):
+        # read as LaTeX by the vision model (parse._read_formulas): the picture, the formula drawn from the LaTeX, the source
+        note = '<div class="pic">Equation: the picture, and under it the LaTeX the vision model read from it (not checked by a person)</div>'
+        tex = "".join(f'<div class="tex" dir="ltr" data-tex="{html.escape(pc["latex"], quote=True)}"></div>'
+                      f'<pre class="texsrc" dir="ltr">{html.escape(pc["latex"])}</pre>' for pc in b["picture"] if pc.get("latex"))
+        return note + crops + tex
     if b["type"] == "equation":
         note = '<div class="pic">Equation shown as a picture: formulas are not transcribed</div>'
         if not spans:
@@ -215,6 +221,24 @@ def _picture_html(b: dict, master: dict, spans: str, d: str) -> str:
     n = sum(1 for part in b["parts"] for t in part.get("line_texts", []) if t.strip())
     note = f'<div class="pic">Figure: a {kind}, shown as a picture' + (f"; {n} label{'s' if n > 1 else ''} read inside it" if n else "") + "</div>"
     return note + crops + (f'<div class="labels" dir="{d}" lang="{lang}">{spans}</div>' if spans else "")
+
+
+_KATEX = Path(__file__).with_name("katex")  # KaTeX 0.16.22, MIT; its fonts inlined in the CSS: the viewer needs no network
+_TEX_JS = r"""document.querySelectorAll(".tex").forEach(function(e){var t=e.dataset.tex;try{
+if(/(^|[^\\])\$/.test(t)){e.classList.add("mixed");e.setAttribute("dir","auto");t.split(/(?<!\\)\$/).forEach(function(p,i){var s=document.createElement("span");
+if(i%2){katex.render(p,s,{throwOnError:true})}else{s.textContent=p}e.appendChild(s)})}
+else{try{katex.render(t,e,{displayMode:true,throwOnError:true})}catch(y){katex.render(t.replace(/\\tag\*?\{([^{}]*)\}/g,"\\qquad($1)"),e,{displayMode:true,throwOnError:true})}}}catch(x){e.textContent="(this LaTeX could not be drawn; its source is below)";e.classList.add("bad")}});"""
+
+
+def _katex() -> str:
+    """KaTeX inline, and the script that draws each formula read as LaTeX (text with $...$ in it: the text as it
+    is, the parts between $ signs drawn as formulas). An equation number KaTeX will not place (\\tag inside several lines) is
+    drawn as "(n)" after a space instead."""
+    css = (_KATEX / "katex.min.css").read_text(encoding="utf-8")
+    js = (_KATEX / "katex.min.js").read_text(encoding="utf-8")
+    return (f"<style>{css}.tex{{margin:6px 0;overflow-x:auto}}.tex.bad{{color:#a33;font-size:12px}}"
+            f".texsrc{{font:11px/1.4 monospace;color:#666;white-space:pre-wrap;word-break:break-all;margin:2px 0 8px}}</style>"
+            f"<script>{js}</script><script>{_TEX_JS}</script>")
 
 
 def _page_warnings(master: dict, number: int) -> str:
@@ -318,5 +342,5 @@ def write_viewer(master: dict, images: list[np.ndarray], path: Path, dpi: int = 
 <div class="legend">{legend}</div>{nav}</header>
 <main><div class="pane"><p class="cap">The scan, with every block boxed and numbered in reading order</p>{scans}</div>
 <div class="pane"><p class="cap">Parsed document</p><div class="doc">{doc}</div></div></main>
-<script>{_JS}</script></body></html>"""
+<script>{_JS}</script>{_katex() if any(b.get("latex") for b in master["blocks"]) else ""}</body></html>"""
     Path(path).write_text(page, encoding="utf-8")

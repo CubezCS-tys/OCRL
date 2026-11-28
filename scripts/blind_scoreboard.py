@@ -20,6 +20,7 @@ ap.add_argument("--ours", default="")
 ap.add_argument("--lines", default="")
 ap.add_argument("--dump", default="", help="write every line's truth and each reader's text here, for the comparison page")
 ap.add_argument("--line-reader", nargs="*", default=[], help="line-reader checkpoints, each given as NAME=PATH")
+ap.add_argument("--texts", nargs="*", default=[], help="readings made elsewhere, each NAME=FILE.jsonl of {\"id\", \"text\"} (crop ids as in blind/crops)")
 a = ap.parse_args()
 X = Path(a.root) / "103_writer_as_judge/out"
 rd = lambda p: [json.loads(l) for l in open(p, encoding="utf-8") if l.strip()]
@@ -66,6 +67,12 @@ if a.line_reader:
         name, path = spec.split("=", 1)
         for i, t in zip(todo, LineReader(path, device="cpu").read(imgs)):
             readers[name][i] = norm(t)
+
+for spec in a.texts:
+    name, path = spec.split("=", 1)
+    for r in rd(path):
+        if r["id"] in truth:
+            readers[name][r["id"]] = norm(r["text"])
 
 if a.ours:
     import cv2, torch

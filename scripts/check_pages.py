@@ -16,6 +16,11 @@ four digits of an id) never seen in bulk_inputs or the Desk database come first;
 out/labeller/unseen_pages.json and unseen_inputs. That set is a DEVELOPMENT set for rules on unseen journals (tune on it,
 never train on it); the exam stays untouched.
 
+--set user: one of the owner's own documents, compared with what the GPU page gave him (PDF and Azure JSON in
+/home/yassine/data/user_docs/ID/). `whole` lists every page of every document there (out/labeller/user_pages.json),
+then `inputs` makes out/labeller/user_inputs/ as above:
+    uv run python scripts/check_pages.py --set user whole && uv run python scripts/check_pages.py --set user inputs
+
 THIS IS A TEST SET. Keep out/labeller/check_* and /home/yassine/data/check_docs out of every training input, and do
 not tune anything on these pages.
 """
@@ -244,6 +249,19 @@ def select(n_pages: int, per_kind: int) -> None:
         print(f"  {k:40s} {v:4d}   (eligible {out['kinds_available'][k]})")
 
 
+def whole() -> None:
+    """--set user: every page of every document in DOCS, no selection (the owner's own documents)."""
+    pages = []
+    for d in sorted(p for p in DOCS.iterdir() if (p / f"{p.name}.json").exists()):
+        az = json.loads((d / f"{d.name}.json").read_text(encoding="utf-8")); az = az.get("analyzeResult", az)
+        for pg in az["pages"]:
+            pages.append({"doc": d.name, "number": pg["pageNumber"], "lines": len(pg.get("lines", [])), "kind": "owner's document",
+                          "page": f"{d.name}_p{pg['pageNumber']}", "pages_in_doc": len(az["pages"])})
+    out = {"made": time.strftime("%Y-%m-%d %H:%M"), "note": "the owner's own documents: every page", "documents": len({p["doc"] for p in pages}), "pages": pages}
+    (LAB / f"{PFX}_pages.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"{len(pages)} pages from {out['documents']} documents -> {LAB / f'{PFX}_pages.json'}")
+
+
 # ------------------------------------------------------------------------------------------------ labeller inputs
 def inputs() -> None:
     """As scripts/labeller_dev_inputs.py made the development pages: drawn by the crop box at 150 dpi, scaled to 1150
@@ -281,17 +299,21 @@ def inputs() -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["candidates", "fetch", "select", "inputs", "kinds"])
+    ap.add_argument("cmd", choices=["candidates", "fetch", "select", "inputs", "kinds", "whole"])
     ap.add_argument("--n", type=int, default=330); ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--what", choices=["json", "pdf"], default="json", help="fetch: Azure's JSON of the candidates, or the PDFs of the chosen pages")
     ap.add_argument("--pages", type=int, default=200); ap.add_argument("--per-kind", type=int, default=10)
-    ap.add_argument("--set", default="check", choices=["check", "unseen"], help="check: the exam (default); unseen: the development set from "
-                    "unseen journals (110 documents in /home/yassine/data/unseen_docs, fetched elsewhere; select and inputs only)")
+    ap.add_argument("--set", default="check", choices=["check", "unseen", "user"], help="check: the exam (default); unseen: the development set from "
+                    "unseen journals (110 documents in /home/yassine/data/unseen_docs, fetched elsewhere; select and inputs only); "
+                    "user: the owner's own documents in /home/yassine/data/user_docs (whole and inputs only)")
     a = ap.parse_args()
     if a.set == "unseen":
         PFX, DOCS = "unseen", Path("/home/yassine/data/unseen_docs")
+    if a.set == "user":
+        PFX, DOCS = "user", Path("/home/yassine/data/user_docs")
     if a.cmd == "candidates": candidates(a.n)
     elif a.cmd == "fetch": fetch(a.what, a.workers)
     elif a.cmd == "select": select(a.pages, a.per_kind)
     elif a.cmd == "inputs": inputs()
     elif a.cmd == "kinds": kind_model()
+    elif a.cmd == "whole": whole()

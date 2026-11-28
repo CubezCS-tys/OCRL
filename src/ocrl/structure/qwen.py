@@ -154,6 +154,67 @@ def assign(ans, n: int, number: int) -> tuple[list, Counter]:
     return got, c
 
 
+# ---------------------------------------------------------------------- formulas
+# An equation block's picture read as LaTeX by the same served model. Measured on 65 formula crops our pipeline cut
+# from development pages (fractions, sums and integrals, statistics, several lines, numbered, Arabic words in them),
+# judged by rendering each answer beside its crop (2026-11-27): the adapter (ocrl) 53 right, 10 minor slips, 2 wrong;
+# the base model 42 / 9 / 14 (it translates or transliterates Arabic words and loops on some). About 2 s a formula,
+# a quarter of a second each when sent together. This prompt; the picture at 300 dpi as it is, PNG.
+FORMULA_PROMPT = ("This image is a formula cut from a scanned printed page. Transcribe it exactly as LaTeX that KaTeX can render. "
+                  "Words in the image stay in their own script inside \\text{...}: Arabic words stay in Arabic letters, never "
+                  "transliterated or translated. Only if an equation number is printed beside the formula, write it at the end as "
+                  "\\tag{...}; never add one that is not printed. Keep several lines with \\begin{aligned}...\\end{aligned}. "
+                  "Do not solve or simplify anything. Output only the LaTeX, with no explanation and no $ signs.")
+FORMULA_MAX_W = 2000  # a wider picture is scaled down to this many pixels
+_ARABIC = re.compile(r"[\u0600-\u06FF]")
+
+
+def formula_picture(gray: np.ndarray) -> np.ndarray:
+    g = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY) if gray.ndim == 3 else gray
+    if g.shape[1] > FORMULA_MAX_W:
+        g = cv2.resize(g, None, fx=FORMULA_MAX_W / g.shape[1], fy=FORMULA_MAX_W / g.shape[1], interpolation=cv2.INTER_AREA)
+    return g
+
+
+def clean_latex(text: str) -> str:
+    """The LaTeX in an answer: no thinking, no code fence, no $$ or \\[ \\] round it, no equation environment. A
+    formula wrapped in $ signs although it has no words outside them loses the $ signs; Arabic words with $...$
+    between them stay as they are: text with formulas in it (the viewer shows it so)."""
+    t = re.sub(r"(?s)^.*</think>", "", text or "").strip()
+    m = re.search(r"(?s)```(?:latex|tex)?\s*(.*?)```", t)
+    if m:
+        t = m.group(1).strip()
+    for a, b in (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)")):
+        if t.startswith(a) and t.endswith(b) and len(t) > len(a) + len(b):
+            t = t[len(a):-len(b)].strip()
+            break
+    t = re.sub(r"(?s)^\\begin\{(equation|displaymath)\*?\}(.*)\\end\{\1\*?\}$", r"\2", t).strip()
+    if "$" in t.replace("\\$", "") and not _ARABIC.search(re.sub(r"\$[^$]*\$", "", t)):
+        t = re.sub(r"(?<!\\)\$", " ", t).strip()  # $...$ round the formula or its parts, no words outside: one formula
+    return t
+
+
+def latex_ok(t: str) -> bool:
+    """Plausibly LaTeX that renders: not empty, not too long, braces and environments balanced, $ signs paired, no
+    long run of one token repeated (a model looping). The viewer still shows the picture if it fails to render."""
+    if not t or len(t) > 3000:
+        return False
+    s = t.replace("\\{", "").replace("\\}", "")
+    depth = 0
+    for ch in s:
+        depth += (ch == "{") - (ch == "}")
+        if depth < 0:
+            return False
+    if depth:
+        return False
+    if Counter(re.findall(r"\\begin\{(\w+\*?)\}", t)) != Counter(re.findall(r"\\end\{(\w+\*?)\}", t)):
+        return False
+    if len(re.findall(r"\\left(?![a-zA-Z])", t)) != len(re.findall(r"\\right(?![a-zA-Z])", t)) or len(re.findall(r"(?<!\\)\$", t)) % 2:
+        return False
+    m = re.search(r"(.{1,12}?)\1{15,}", t.replace(" ", ""))  # a leader of dots may be long; nothing else repeats so
+    return not (m and set(m.group(1)) - set(".,"))
+
+
 def _key(boxes, texts) -> tuple:
     """A page's lines, whatever their order: how tag() and reorder() find the answer prepare() got."""
     return tuple(sorted((tuple(int(v) for v in b), t) for b, t in zip(np.asarray(boxes).tolist(), texts)))
@@ -174,6 +235,7 @@ class QwenTyper:
         self.timeout = float(o.get("timeout", 240))
         self.quality = int(o.get("quality", 82))
         self.cache = Path(o["cache"]) if o.get("cache") else None
+        self.formulas = o.get("formulas", "ocrl")  # the served model that reads formulas as LaTeX; "off" for none
         self.fallback_spec = rest or DEFAULT
         self.pair = Typer(self.fallback_spec, lists=lists)
         self.lists = lists
@@ -202,9 +264,13 @@ class QwenTyper:
     def _ask(self, msgs: list, sampled: bool) -> str:
         body = {"model": self.model, "messages": msgs, "max_tokens": 8000, "chat_template_kwargs": {"enable_thinking": False}}
         body.update({"temperature": 0.7, "top_p": 0.8, "top_k": 20, "seed": 1} if sampled else {"temperature": 0.0, "seed": 0})
+        return self._cached(body)
+
+    def _cached(self, body: dict) -> str:
+        """The server's answer to one request; with cache= kept on disk by the request's hash."""
         if self.cache is None:
             return self._post(body)
-        f = self.cache / (hashlib.sha1(json.dumps([self.model, body], sort_keys=True).encode()).hexdigest() + ".txt")
+        f = self.cache / (hashlib.sha1(json.dumps([body["model"], body], sort_keys=True).encode()).hexdigest() + ".txt")
         if f.exists():
             return f.read_text(encoding="utf-8")
         text = self._post(body)
@@ -261,6 +327,42 @@ class QwenTyper:
         self.doc["seconds"] = round(time.time() - t, 2)
         with self._lock:
             self.stats.update(self.doc)
+
+    # ------------------------------------------------------------------ formulas
+    def read_formulas(self, crops: dict) -> dict:
+        """Each formula's picture (grey, 300 dpi) read as LaTeX by the served model, all at once (vLLM batches them).
+        `crops` {key: image}; returns {key: LaTeX} for those whose answer is usable (latex_ok); the rest are left out
+        and stay pictures. Counted in `doc` (formulas, formulas_read, formulas_unusable, formulas_failed) for how().
+        Not asked when formulas=off, or when every page of this document failed to reach the server."""
+        if not crops or self.formulas == "off":
+            return {}
+        if self.doc["pages"] and self.doc["pages_failed"] == self.doc["pages"] and any(k.startswith("errors_") for k in self.doc):
+            self.doc.update(formulas=len(crops), formulas_failed=len(crops))
+            return {}
+        t = time.time()
+
+        def one(img):
+            ok, buf = cv2.imencode(".png", formula_picture(img))
+            body = {"model": self.formulas, "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.standard_b64encode(buf.tobytes()).decode()}},
+                {"type": "text", "text": FORMULA_PROMPT}]}],
+                "max_tokens": 1000, "temperature": 0.0, "seed": 0, "chat_template_kwargs": {"enable_thinking": False}}
+            try:
+                return clean_latex(self._cached(body)), ""
+            except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError, IndexError) as e:
+                return "", type(e).__name__
+
+        keys = list(crops)
+        with ThreadPoolExecutor(max(1, min(2 * self.workers, len(keys)))) as ex:
+            res = list(ex.map(lambda k: one(crops[k]), keys))
+        out = {k: tex for k, (tex, err) in zip(keys, res) if not err and latex_ok(tex)}
+        c = Counter(formulas=len(keys), formulas_read=len(out), formulas_failed=sum(bool(err) for _, err in res))
+        c["formulas_unusable"] = c["formulas"] - c["formulas_read"] - c["formulas_failed"]
+        c["formulas_seconds"] = round(time.time() - t, 2)
+        self.doc.update(c)
+        with self._lock:
+            self.stats.update(c)
+        return out
 
     # ------------------------------------------------------------------ answering
     def _answer(self, boxes, texts):
@@ -342,4 +444,10 @@ class QwenTyper:
         if self.rules:
             parts.append("with our " + ", ".join(sorted(self.rules)) + " rules on top")
         parts.append(f"reading order: {'Qwen' if self.order == 'qwen' else 'layout'}")
-        return ", ".join(parts) + ". Local, nothing sent outside. Not checked by a person."
+        out = ", ".join(parts) + "."
+        if d["formulas"]:
+            out += (f" Formulas: {d['formulas_read']} of {d['formulas']} read as LaTeX by the same model (not checked)"
+                    + (f"; {d['formulas_unusable']} answers not usable" if d["formulas_unusable"] else "")
+                    + (f"; {d['formulas_failed']} not answered" if d["formulas_failed"] else "")
+                    + ("; those are shown as pictures only." if d["formulas_read"] < d["formulas"] else "."))
+        return out + " Local, nothing sent outside. Not checked by a person."

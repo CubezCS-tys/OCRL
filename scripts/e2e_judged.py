@@ -76,6 +76,9 @@ SETS = {
     "check": {"inputs": "check_inputs", "prefix": "check", "judges": ("haiku", "flash", "argon"), "block_ref": "haiku", "docs": "/home/yassine/data/check_docs"},
     # development set from unseen journals (scripts/check_pages.py --set unseen): two labellers, a type counts where both agree
     "unseen": {"inputs": "unseen_inputs", "prefix": "unseen", "judges": ("haiku", "flash"), "block_ref": "flash", "docs": "/home/yassine/data/unseen_docs"},
+    # the owner's own documents (scripts/check_pages.py --set user): every page, labelled by Gemini Argon and Flash; types
+    # count where both agree (and against each alone), blocks and order against Argon's. Scored with --score-master.
+    "user": {"inputs": "user_inputs", "prefix": "user", "judges": ("argon", "flash"), "block_ref": "argon", "docs": "/home/yassine/data/user_docs"},
 }
 
 
@@ -621,6 +624,29 @@ def rescore(name: str) -> dict:
     return old
 
 
+def score_master(name: str, master_file: str, seconds: float | None = None, parse_seconds: float | None = None) -> dict:
+    """Score one whole-document master that was made elsewhere (the GPU page's own out/uploads/JOB/master.json) on every
+    page of the current set that belongs to its document, without parsing anything. The master is saved under
+    out/e2e/NAME/masters/ once per page, so --rescore works on it. Seconds, if given, are spread evenly over the pages."""
+    master = json.loads(Path(master_file).read_text(encoding="utf-8"))
+    refs = {pg: r for pg, r in load_reference().items() if r["doc"] == master["id"]}
+    if not refs:
+        raise SystemExit(f"no page of the {SET} set belongs to document {master['id']}")
+    out = E2E / name
+    (out / "masters").mkdir(parents=True, exist_ok=True)
+    res = {"name": name, "set": SET, "config": {"typer": master.get("made_by", {}).get("structure", "?"), "reader": master.get("made_by", {}).get("text", "?"),
+           "master": str(master_file)}, "when": time.strftime("%Y-%m-%d %H:%M"), "pages": {}, "errors": []}
+    n = len(refs)
+    for pg, ref in refs.items():
+        (out / "masters" / f"{pg}.master.json").write_text(json.dumps(master, ensure_ascii=False), encoding="utf-8")
+        s = score_page(master, ref)
+        read = (parse_seconds if parse_seconds is not None else seconds or 0.0) / n
+        s["c"].update(pages=1, s_draw=((seconds or 0.0) - (parse_seconds or 0.0)) / n if parse_seconds is not None and seconds else 0.0, s_read=read, s_structure=0.0)
+        res["pages"][pg] = {"kind": ref["kind"], **s}
+    save(res)
+    return res
+
+
 def labelling_as_master(ref: dict, who: str) -> dict:
     """A judge's labelling dressed as one of our master files (Azure's boxes and text as our lines), for --selftest."""
     W, H = 8.5, 11.0  # any page size: boxes are given in thousandths and scored in thousandths
@@ -727,9 +753,16 @@ def main() -> None:
     ap.add_argument("--rescore", metavar="NAME", help="score a saved run's masters again")
     ap.add_argument("--selftest", nargs="?", const="", metavar="JUDGE", help="score a judge's own labels as our output: checks the ruler")
     ap.add_argument("--selftest-folder", metavar="DIR", help="score a labeller's answers (DIR/PAGE.json, e.g. out/labeller/dev_qwenft) as our output, on Azure's lines")
+    ap.add_argument("--score-master", metavar="FILE", help="score a whole-document master made elsewhere (e.g. the GPU page's) on that "
+                    "document's pages of --set; saved as --name; --seconds and --parse-seconds give its timing")
+    ap.add_argument("--seconds", type=float); ap.add_argument("--parse-seconds", type=float)
     ap.add_argument("--azure-typer", metavar="SPEC", help="the structure step alone on Azure's lines (see typer_on_azure); saved as --name")
     a = ap.parse_args()
     use_set(a.set)
+    if a.score_master:
+        if not a.name:
+            ap.error("--score-master needs --name")
+        r = score_master(a.name, a.score_master, a.seconds, a.parse_seconds); print(summary(r)); return
     if a.azure_typer:
         if a.src:
             sys.path.insert(0, str(Path(a.src).resolve()))
