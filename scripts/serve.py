@@ -191,8 +191,8 @@ a { color:var(--accent); }
 <body>
 <main>
   <header style="display:flex;flex-direction:column;gap:10px">
-    <h1>Parse a document, on this machine</h1>
-    <p class="muted">Drop a scanned PDF below. Its pages are read here by three models: one finds the lines, one reads them, one says what each line is. Nothing leaves this computer.</p>
+    <h1>__TITLE__</h1>
+    <p class="muted">__INTRO__</p>
   </header>
   <div class="drop" id="drop">
     <p id="chosen">Drop a PDF here</p>
@@ -318,7 +318,11 @@ $("go").onclick = async () => {
   let r;
   try { r = await fetch("/upload?" + q, { method: "POST", body: file }); } catch (e) { r = null; }
   tmp.remove(); $("go").disabled = false;
-  if (!r || !r.ok) { const el = card("refused"); el.innerHTML = `<b class="bad big">Upload refused</b><span>${esc(r ? await r.text() : "The parser could not be reached.")}</span>`; return; }
+  if (!r || !r.ok) {
+    let why = r ? await r.text() : "";
+    // A tunnel in front of the page answers with its own error page when the parser behind it is not running.
+    if (!r || /^\s*<(!doctype|html)/i.test(why)) why = "The parser could not be reached: the machine it runs on is not up right now. Nothing was uploaded. Please try again once it has been started.";
+    const el = card("refused"); el.innerHTML = `<b class="bad big">Upload did not go through</b><span>${esc(why)}</span>`; return; }
   $("job-refused")?.remove();
   const j = await r.json();
   setMine([...mine(), j.id]); render(Object.assign({ state: "waiting", now: Date.now() / 1000, queued: Date.now() / 1000, ahead: 0, starts_in: 0, left: 0 }, j)); watch(j.id);
@@ -353,7 +357,14 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/":
             full = a.max_pages * (pace["draw"] + pace["read"] + pace["finish"]) / 60
-            page = PAGE.replace("__MAX__", str(a.max_pages)).replace("__PACE__", f"{pace['draw'] + pace['read']:.0f}").replace("__FULL__", f"{full:.0f}")
+            gpu = a.typer.startswith("qwen:")  # the GPU version: the page says where the document really goes
+            title = "Parse a document, on our GPU machine" if gpu else "Parse a document, on this machine"
+            intro = ("Drop a scanned PDF below. It is sent to a rented GPU machine and read there by our own models: one finds the lines, "
+                     "one reads them, and a fine-tuned vision model says what each line is and reads formulas. No outside AI service "
+                     "sees it; uploads are deleted when the machine is stopped.") if gpu else (
+                     "Drop a scanned PDF below. Its pages are read here by three models: one finds the lines, one reads them, "
+                     "one says what each line is. Nothing leaves this computer.")
+            page = PAGE.replace("__TITLE__", title).replace("__INTRO__", intro).replace("__MAX__", str(a.max_pages)).replace("__PACE__", f"{pace['draw'] + pace['read']:.0f}").replace("__FULL__", f"{full:.0f}")
             return self.send(page.encode(), "text/html")
         if path == "/history":
             rows = []
